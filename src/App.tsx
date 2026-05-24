@@ -3,17 +3,18 @@ import { Camera, Settings as SettingsIcon, Check, Loader2, AlertCircle, Save, X,
 import { useConfig } from './hooks/useConfig';
 import { Settings } from './components/Settings';
 import { ModelTester } from './components/ModelTester';
-import { getCameraStream, captureFrame, convertToLosslessWebP, fileToDataUrl } from './utils/image';
+import { convertToLosslessWebP, fileToDataUrl } from './utils/image';
 import { copyToClipboard } from './utils/clipboard';
 import { analyzeTicket } from './services/gemini';
 import { initTokenClient, requestToken, uploadToDrive, appendToSheet, createSheet, getSheetValues, updateSheetValues, ensureSysLists, validateSchema, ensureSchema, getCustomInstructions } from './services/google';
+import { APP_VERSION } from './version';
 import type { TicketData } from './types';
 import './index.css';
 
 function App() {
   const { config, saveConfig, isConfigured, getShareUrl } = useConfig();
   const [showSettings, setShowSettings] = useState(!isConfigured);
-  const [status, setStatus] = useState<'idle' | 'preview' | 'confirm_capture' | 'processing' | 'reviewing' | 'saving' | 'success' | 'error' | 'history' | 'accounts' | 'aliases' | 'benchmark'>(() => {
+  const [status, setStatus] = useState<'idle' | 'confirm_capture' | 'processing' | 'reviewing' | 'saving' | 'success' | 'error' | 'history' | 'accounts' | 'aliases' | 'benchmark'>(() => {
     const saved = localStorage.getItem('ticketapp_review_state');
     return saved ? JSON.parse(saved).status : 'idle';
   });
@@ -60,10 +61,10 @@ function App() {
   const [saveAsAlias, setSaveAsAlias] = useState(false);
   const [originalDetectedStore, setOriginalDetectedStore] = useState("");
 
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [stream, setStream] = useState<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
+
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
   useEffect(() => {
     if (['confirm_capture', 'processing', 'reviewing', 'saving'].includes(status) && (ticketData || webpPhoto)) {
@@ -99,7 +100,6 @@ function App() {
     try {
       if (!config.googleSheetId || !googleToken) return;
       await ensureSysLists(googleToken, config.googleSheetId);
-      
       const data = await getSheetValues(googleToken, config.googleSheetId, 'SYS_LISTS!A2:C100');
       if (data.values) {
         setKnownCategories(data.values.map((row: any) => row[0]).filter(Boolean));
@@ -107,15 +107,11 @@ function App() {
         const peopleList = data.values.map((row: any) => row[2]).filter(Boolean);
         if (peopleList.length > 0) setPeople(peopleList);
       }
-
       await fetchAccounts(googleToken);
       await fetchAliases(googleToken);
-
       const instructions = await getCustomInstructions(googleToken, config.googleSheetId);
       setCustomInstructions(instructions);
-    } catch (err) {
-      console.error('Failed to load SYS_LISTS:', err);
-    }
+    } catch (err) { console.error('Failed to load SYS_LISTS:', err); }
   };
 
   useEffect(() => {
@@ -136,39 +132,6 @@ function App() {
       performSave(googleToken);
     }
   }, [googleToken, waitingForToken]);
-
-  const startPreview = async () => {
-    try {
-      const cameraStream = await getCameraStream();
-      setStream(cameraStream);
-      setStatus('preview');
-    } catch (err: any) {
-      setError(err.message || 'Error al acceder a la cámara');
-      setStatus('error');
-    }
-  };
-
-  const stopStream = () => {
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop());
-      setStream(null);
-    }
-  };
-
-  const handleCapture = async () => {
-    if (!videoRef.current) return;
-    try {
-      setError(null);
-      const rawPhoto = captureFrame(videoRef.current);
-      stopStream();
-      const webp = await convertToLosslessWebP(rawPhoto);
-      setWebpPhoto(webp);
-      setStatus('confirm_capture');
-    } catch (err: any) {
-      setError(err.message || 'Error al capturar');
-      setStatus('error');
-    }
-  };
 
   const handleAnalyze = async () => {
     try {
@@ -237,15 +200,24 @@ function App() {
     const oldName = people[index];
     const newName = editPersonValue;
     if (!newName || oldName === newName) { setEditingPersonIdx(null); return; }
+    
     const updatedPeople = people.map((p, i) => i === index ? newName : p);
     const updatedAccounts = accounts.map(acc => [acc[0], acc[1], acc[2] === oldName ? newName : acc[2]]);
+    
     try {
       setLoadingAccounts(true);
       const current = await getSheetValues(googleToken!, config.googleSheetId!, 'SYS_LISTS!A2:B100');
-      const finalPeopleValues = updatedPeople.map((p, i) => [ current.values?.[i]?.[0] || "", current.values?.[i]?.[1] || "", p ]);
+      const finalPeopleValues = updatedPeople.map((p, i) => [
+        current.values?.[i]?.[0] || "",
+        current.values?.[i]?.[1] || "",
+        p
+      ]);
       await updateSheetValues(googleToken!, config.googleSheetId!, `SYS_LISTS!A2:C${finalPeopleValues.length + 1}`, finalPeopleValues);
       await updateSheetValues(googleToken!, config.googleSheetId!, `Accounts!A2:C${updatedAccounts.length + 1}`, updatedAccounts);
-      setPeople(updatedPeople); setAccounts(updatedAccounts as any); setEditingPersonIdx(null);
+      
+      setPeople(updatedPeople);
+      setAccounts(updatedAccounts as any);
+      setEditingPersonIdx(null);
     } catch (err) { setError('Error al renombrar persona'); } finally { setLoadingAccounts(false); }
   };
 
@@ -256,7 +228,11 @@ function App() {
       setLoadingAccounts(true);
       const current = await getSheetValues(googleToken!, config.googleSheetId!, 'SYS_LISTS!A2:B100');
       await updateSheetValues(googleToken!, config.googleSheetId!, 'SYS_LISTS!C2:C100', Array(99).fill(['']));
-      const finalValues = updated.map((p, i) => [ current.values?.[i]?.[0] || "", current.values?.[i]?.[1] || "", p ]);
+      const finalValues = updated.map((p, i) => [
+        current.values?.[i]?.[0] || "",
+        current.values?.[i]?.[1] || "",
+        p
+      ]);
       await updateSheetValues(googleToken!, config.googleSheetId!, `SYS_LISTS!A2:C${finalValues.length + 1}`, finalValues);
       setPeople(updated);
     } catch (err) { setError('Error al eliminar persona'); } finally { setLoadingAccounts(false); }
@@ -464,9 +440,7 @@ function App() {
       <header style={{ padding: '1rem 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1 style={{ fontSize: '1.5rem' }}>TicketApp 🎫</h1>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
-          {config.analysisMode && (
-            <button onClick={() => setStatus('benchmark')} title="Benchmark"><Zap size={20} color="var(--primary)" /></button>
-          )}
+          {config.analysisMode && <button onClick={() => setStatus('benchmark')} title="Benchmark"><Zap size={20} color="var(--primary)" /></button>}
           <button onClick={loadAliasesView} title="Alias"><BookMarked size={20} /></button>
           <button onClick={loadAccountsView} title="Cuentas"><Users size={20} /></button>
           <button onClick={loadHistory} title="Historial"><HistoryIcon size={20} /></button>
@@ -479,11 +453,15 @@ function App() {
           <div className="card" style={{ padding: '3rem 2rem', textAlign: 'center' }}>
             <Camera size={64} style={{ color: 'var(--primary)', marginBottom: '1rem' }} />
             <h2>Captura un nuevo ticket</h2>
-            <button className="primary" onClick={startPreview} style={{ width: '100%', marginTop: '2rem' }}>Abrir Cámara (Live)</button>
-            <div style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              <p style={{ fontSize: '0.85rem', color: '#64748b' }}>Otras opciones:</p>
-              <button onClick={() => fileInputRef.current?.click()} style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}><Camera size={18} /> Tomar Foto (App Nativa)</button>
-              <button onClick={() => galleryInputRef.current?.click()} style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}><Upload size={18} /> Elegir de Galería</button>
+            <div style={{ marginTop: '2rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              {isMobile ? (
+                <>
+                  <button className="primary" onClick={() => fileInputRef.current?.click()} style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}><Camera size={18} /> Tomar Foto</button>
+                  <button onClick={() => galleryInputRef.current?.click()} style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}><Upload size={18} /> Elegir de Galería</button>
+                </>
+              ) : (
+                <button className="primary" onClick={() => galleryInputRef.current?.click()} style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}><Upload size={18} /> Elegir Archivo</button>
+              )}
               <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept="image/*" capture="environment" style={{ display: 'none' }} />
               <input type="file" ref={galleryInputRef} onChange={handleFileUpload} accept="image/*" style={{ display: 'none' }} />
             </div>
@@ -574,11 +552,8 @@ function App() {
             {loadingHistory ? <Loader2 size={32} className="animate-spin" /> : history.length === 0 ? <p>Sin tickets.</p> : <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}> {history.map((row, i) => <div key={i} className="card" style={{ padding: '1rem' }}> <div style={{ display: 'flex', justifyContent: 'space-between' }}><strong>{row[3]}</strong> <span>${row[4]}</span></div> <div>{row[1].replace('T', ' ')} | {row[7]}</div> </div>)} </div>}
           </div>
         )}
-        {status === 'preview' && (
-          <div className="card" style={{ padding: '0' }}><video ref={videoRef} autoPlay playsInline style={{ width: '100%', background: '#000' }} /><div style={{ padding: '1.5rem', display: 'flex', gap: '1rem' }}><button className="primary" onClick={handleCapture} style={{ flex: 2 }}>Capturar</button><button onClick={() => { stopStream(); setStatus('idle'); }} style={{ flex: 1 }}><X size={20} /></button></div></div>
-        )}
         {status === 'confirm_capture' && webpPhoto && (
-          <div className="card" style={{ padding: '0' }}><img src={webpPhoto} alt="Preview" style={{ width: '100%' }} /><div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}><button className="primary" onClick={handleAnalyze}><Check size={20} /> Analizar Ticket</button><button onClick={startPreview}><Camera size={20} /> Repetir</button><button onClick={() => setStatus('idle')}>Cancelar</button></div></div>
+          <div className="card" style={{ padding: '0' }}><img src={webpPhoto} alt="Preview" style={{ width: '100%' }} /><div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}><button className="primary" onClick={handleAnalyze}><Check size={20} /> Analizar Ticket</button><button onClick={() => setStatus('idle')}><Camera size={20} /> Repetir</button><button onClick={() => setStatus('idle')}>Cancelar</button></div></div>
         )}
         {(status === 'processing' || status === 'saving') && (
           <div className="card" style={{ textAlign: 'center', padding: '4rem 2rem' }}><Loader2 size={48} className="animate-spin" style={{ margin: '0 auto 1.5rem' }} /><h2>{status === 'processing' ? 'Analizando...' : 'Guardando...'}</h2></div>
@@ -603,7 +578,9 @@ function App() {
           <div className="card" style={{ border: '1px solid var(--error)' }}><AlertCircle size={48} style={{ color: 'var(--error)', margin: '0 auto 1.5rem', display: 'block' }} /><h2>Error</h2><p>{error}</p><button className="primary" style={{ width: '100%', marginTop: '1.5rem' }} onClick={handleRetryAfterError}>{error?.includes('sesión de Google ha caducado') ? 'Volver a Intentar' : 'Ir al Inicio'}</button></div>
         )}
       </main>
-      <footer style={{ marginTop: 'auto', padding: '2rem 0', textAlign: 'center', fontSize: '0.875rem', color: '#64748b' }}> Conectado a Google Drive & Gemini AI </footer>
+      <footer style={{ marginTop: 'auto', padding: '2rem 0', textAlign: 'center', fontSize: '0.875rem', color: '#64748b' }}>
+        Hecho por <a href="https://github.com/teshynil/" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--primary)', textDecoration: 'none', fontWeight: 'bold' }}>Teshynil</a> | versión ({APP_VERSION})
+      </footer>
     </div>
   );
 }
