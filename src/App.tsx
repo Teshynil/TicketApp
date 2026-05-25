@@ -60,6 +60,7 @@ function App() {
   const [newAlias, setNewAlias] = useState({ legal: '', commercial: '' });
   const [saveAsAlias, setSaveAsAlias] = useState(false);
   const [originalDetectedStore, setOriginalDetectedStore] = useState("");
+  const [isViewingFullImage, setIsViewingFullImage] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
@@ -543,7 +544,7 @@ function App() {
         )}
         {status === 'reviewing' && ticketData && (
           <div className="card" style={{ padding: '0', overflow: 'hidden' }}>
-            <div style={{ maxHeight: '200px', overflow: 'hidden', borderBottom: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer' }} onClick={() => window.open(webpPhoto || '', '_blank')}>
+            <div style={{ maxHeight: '200px', overflow: 'hidden', borderBottom: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer' }} onClick={() => setIsViewingFullImage(true)}>
               <img src={webpPhoto || ''} alt="Ticket" style={{ width: '100%', objectFit: 'cover', objectPosition: 'center' }} title="Click para ver completa" />
             </div>
 
@@ -585,6 +586,24 @@ function App() {
           <div className="card" style={{ border: '1px solid var(--error)' }}><AlertCircle size={48} style={{ color: 'var(--error)', margin: '0 auto 1.5rem', display: 'block' }} /><h2>Error</h2><p>{error}</p><button className="primary" style={{ width: '100%', marginTop: '1.5rem' }} onClick={handleRetryAfterError}>{error?.includes('sesión de Google ha caducado') ? 'Volver a Intentar' : 'Ir al Inicio'}</button></div>
         )}
       </main>
+
+      {/* Full Image Modal */}
+      {isViewingFullImage && webpPhoto && (
+        <div 
+          style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.95)', zIndex: 1000, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}
+          onClick={() => setIsViewingFullImage(false)}
+        >
+          <button onClick={() => setIsViewingFullImage(false)} style={{ position: 'absolute', top: '1rem', right: '1rem', background: 'rgba(255,255,255,0.2)', color: 'white', borderRadius: '50%', padding: '0.5rem', zIndex: 1001, border: 'none', cursor: 'pointer' }}>
+            <X size={32} />
+          </button>
+          <img 
+            src={webpPhoto} 
+            alt="Ticket Full" 
+            style={{ maxWidth: '100%', maxHeight: '90vh', objectFit: 'contain', borderRadius: '8px', boxShadow: '0 0 40px rgba(0,0,0,0.5)' }} 
+          />
+        </div>
+      )}
+
       <footer style={{ marginTop: 'auto', padding: '2rem 0', textAlign: 'center', fontSize: '0.875rem', color: '#64748b' }}>
         Hecho por <a href="https://github.com/teshynil/" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--primary)', textDecoration: 'none', fontWeight: 'bold' }}>Teshynil</a> | versión ({APP_VERSION})
       </footer>
