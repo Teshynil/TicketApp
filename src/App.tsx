@@ -467,9 +467,9 @@ function App() {
                 <button onClick={() => setEditingField(field)} style={{ background: 'transparent', color: '#94a3b8', padding: '0.5rem' }}> <Pencil size={16} /> </button>
               </div>
               {field === 'storeName' && originalDetectedStore && value !== originalDetectedStore && (
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.7rem', color: 'var(--primary)', marginTop: '0.25rem', cursor: 'pointer' }}>
-                  <input type="checkbox" checked={saveAsAlias} onChange={e => setSaveAsAlias(e.target.checked)} />
-                  Tratar "{value as string}" como alias de "{originalDetectedStore}"
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.65rem', color: '#64748b', marginTop: '0.2rem', cursor: 'pointer', background: 'rgba(255,255,255,0.02)', padding: '0.25rem 0.5rem', borderRadius: '4px', alignSelf: 'start' }}>
+                  <input type="checkbox" checked={saveAsAlias} onChange={e => setSaveAsAlias(e.target.checked)} style={{ width: '12px', height: '12px' }} />
+                  Recordar como alias de "{originalDetectedStore}"
                 </label>
               )}
             </div>
@@ -622,20 +622,19 @@ function App() {
               )}
               
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                {renderEditableField('Proveedor', 'storeName')}
-                {renderEditableField('Fecha y Hora', 'purchaseDate')}
-                <div style={{ display: 'flex', gap: '1rem' }}>
-                  <div style={{ flex: 1 }}>{renderEditableField('Método', 'paymentMethod')}</div>
-                  <div style={{ flex: 1 }}>{renderEditableField('Detalle', 'paymentDetail')}</div>
-                </div>
-                {renderEditableField('¿Quién pagó?', 'paymentAccount')}
-                <div style={{ display: 'flex', gap: '1rem' }}>
-                  <div style={{ flex: 1 }}>{renderEditableField('Monto', 'amount', 'number')}</div>
-                  <div style={{ flex: 1.2 }}>{renderEditableField('Categoría', 'category')}</div>
-                </div>
-                {renderEditableField('Descripción', 'description')}
+              {renderEditableField('Proveedor', 'storeName')}
+              {renderEditableField('Fecha y Hora', 'purchaseDate')}
+              {renderEditableField('Método', 'paymentMethod')}
+              <div style={{ display: 'flex', gap: '1rem' }}>
+                <div style={{ flex: 1 }}>{renderEditableField('Detalle', 'paymentDetail')}</div>
+                <div style={{ flex: 1 }}>{renderEditableField('¿Quién pagó?', 'paymentAccount')}</div>
               </div>
-              <button className="primary" style={{ width: '100%', marginTop: '1.5rem' }} onClick={handleSave}><Save size={20} /> Confirmar y Guardar</button>
+              <div style={{ display: 'flex', gap: '1rem' }}>
+                <div style={{ flex: 1 }}>{renderEditableField('Monto', 'amount', 'number')}</div>
+                <div style={{ flex: 1.2 }}>{renderEditableField('Categoría', 'category')}</div>
+              </div>
+              {renderEditableField('Descripción', 'description')}
+              </div>              <button className="primary" style={{ width: '100%', marginTop: '1.5rem' }} onClick={handleSave}><Save size={20} /> Confirmar y Guardar</button>
             </div>
           </div>
         )}
