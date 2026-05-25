@@ -11,6 +11,8 @@ import { APP_VERSION } from './version';
 import type { TicketData } from './types';
 import './index.css';
 
+const PAYMENT_METHODS = ['Efectivo', 'Tarjeta', 'Transferencia', 'Otros'];
+
 function App() {
   const { config, saveConfig, isConfigured, getShareUrl } = useConfig();
   const [showSettings, setShowSettings] = useState(!isConfigured);
@@ -40,10 +42,11 @@ function App() {
   const [history, setHistory] = useState<any[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
   
-  const [accounts, setAccounts] = useState<[string, string, string][]>([]);
+  // Cache-aware initial states
+  const [accounts, setAccounts] = useState<[string, string, string][]>(() => JSON.parse(localStorage.getItem('ticketapp_cache_accounts') || '[]'));
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [newAccount, setNewAccount] = useState({ digits: '', cardName: '', person: '' });
-  const [people, setPeople] = useState<string[]>(['Principal']);
+  const [people, setPeople] = useState<string[]>(() => JSON.parse(localStorage.getItem('ticketapp_cache_people') || '["Principal"]'));
   const [newPersonName, setNewPersonName] = useState('');
   const [editingPersonIdx, setEditingPersonIdx] = useState<number | null>(null);
   const [editPersonValue, setEditPersonName] = useState('');
@@ -51,15 +54,15 @@ function App() {
   const [editAccountData, setEditAccountData] = useState({ cardName: '', person: '' });
   const [editingField, setEditingField] = useState<string | null>(null);
 
-  const [knownCategories, setKnownCategories] = useState<string[]>([]);
-  const [knownStores, setKnownStores] = useState<string[]>([]);
+  const [knownCategories, setKnownCategories] = useState<string[]>(() => JSON.parse(localStorage.getItem('ticketapp_cache_categories') || '[]'));
+  const [knownStores, setKnownStores] = useState<string[]>(() => JSON.parse(localStorage.getItem('ticketapp_cache_stores') || '[]'));
   const [customInstructions, setCustomInstructions] = useState("");
   
-  const [aliases, setAliases] = useState<[string, string][]>([]);
+  const [aliases, setAliases] = useState<[string, string][]>(() => JSON.parse(localStorage.getItem('ticketapp_cache_aliases') || '[]'));
   const [loadingAliases, setLoadingAliases] = useState(false);
   const [newAlias, setNewAlias] = useState({ legal: '', commercial: '' });
   const [saveAsAlias, setSaveAsAlias] = useState(false);
-  const [originalDetectedStore, setOriginalDetectedStore] = useState("");
+  const [originalDetectedStore, setOriginalDetectedStore] = useState(() => localStorage.getItem('ticketapp_original_store') || "");
   const [isViewingFullImage, setIsViewingFullImage] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -70,10 +73,12 @@ function App() {
   useEffect(() => {
     if (['confirm_capture', 'processing', 'reviewing', 'saving'].includes(status) && (ticketData || webpPhoto)) {
       localStorage.setItem('ticketapp_review_state', JSON.stringify({ status, ticketData, webpPhoto }));
+      if (originalDetectedStore) localStorage.setItem('ticketapp_original_store', originalDetectedStore);
     } else if (status === 'idle' || status === 'success') {
       localStorage.removeItem('ticketapp_review_state');
+      localStorage.removeItem('ticketapp_original_store');
     }
-  }, [status, ticketData, webpPhoto]);
+  }, [status, ticketData, webpPhoto, originalDetectedStore]);
 
   useEffect(() => {
     if (googleToken && isConfigured) {
@@ -85,7 +90,12 @@ function App() {
     try {
       setLoadingAccounts(true);
       const data = await getSheetValues(token, config.googleSheetId!, 'Accounts!A2:C50');
-      if (data.values) setAccounts(data.values); else setAccounts([]);
+      if (data.values) {
+        setAccounts(data.values);
+        localStorage.setItem('ticketapp_cache_accounts', JSON.stringify(data.values));
+      } else {
+        setAccounts([]);
+      }
     } catch (err: any) { console.error('Error fetching accounts:', err); } finally { setLoadingAccounts(false); }
   };
 
@@ -93,7 +103,12 @@ function App() {
     try {
       setLoadingAliases(true);
       const data = await getSheetValues(token, config.googleSheetId!, 'SYS_ALIASES!A2:B100');
-      if (data.values) setAliases(data.values); else setAliases([]);
+      if (data.values) {
+        setAliases(data.values);
+        localStorage.setItem('ticketapp_cache_aliases', JSON.stringify(data.values));
+      } else {
+        setAliases([]);
+      }
     } catch (err) { console.error('Error fetching aliases:', err); } finally { setLoadingAliases(false); }
   };
 
@@ -103,10 +118,17 @@ function App() {
       await ensureSysLists(googleToken, config.googleSheetId);
       const data = await getSheetValues(googleToken, config.googleSheetId, 'SYS_LISTS!A2:C100');
       if (data.values) {
-        setKnownCategories(data.values.map((row: any) => row[0]).filter(Boolean));
-        setKnownStores(data.values.map((row: any) => row[1]).filter(Boolean));
+        const cats = data.values.map((row: any) => row[0]).filter(Boolean);
+        const strs = data.values.map((row: any) => row[1]).filter(Boolean);
         const peopleList = data.values.map((row: any) => row[2]).filter(Boolean);
+        
+        setKnownCategories(cats);
+        setKnownStores(strs);
         if (peopleList.length > 0) setPeople(peopleList);
+        
+        localStorage.setItem('ticketapp_cache_categories', JSON.stringify(cats));
+        localStorage.setItem('ticketapp_cache_stores', JSON.stringify(strs));
+        localStorage.setItem('ticketapp_cache_people', JSON.stringify(peopleList.length > 0 ? peopleList : people));
       }
       await fetchAccounts(googleToken);
       await fetchAliases(googleToken);
@@ -190,8 +212,10 @@ function App() {
     const oldName = people[index];
     const newName = editPersonValue;
     if (!newName || oldName === newName) { setEditingPersonIdx(null); return; }
+    
     const updatedPeople = people.map((p, i) => i === index ? newName : p);
     const updatedAccounts = accounts.map(acc => [acc[0], acc[1], acc[2] === oldName ? newName : acc[2]]);
+    
     try {
       setLoadingAccounts(true);
       const current = await getSheetValues(googleToken!, config.googleSheetId!, 'SYS_LISTS!A2:B100');
@@ -318,7 +342,7 @@ function App() {
       try {
         setLoadingHistory(true); setStatus('history');
         const data = await getSheetValues(token, config.googleSheetId!, 'TicketsForm!A2:J100');
-        if (data.values) setHistory(data.values.reverse()); else setHistory([]);
+        if (data.values) setHistory(data.values); else setHistory([]);
       } catch (err: any) { setError('Error al cargar historial'); } finally { setLoadingHistory(false); }
     };
     if (!googleToken) requestToken(); else fetchHistory(googleToken);
@@ -365,8 +389,15 @@ function App() {
     if (!ticketData) return null;
     const isEditing = editingField === field;
     const value = ticketData[field];
-    const isSpecialSelector = field === 'category' || field === 'storeName' || field === 'paymentAccount';
-    const list = field === 'category' ? knownCategories : field === 'storeName' ? knownStores : people;
+    
+    // Selectors logic
+    const isSpecialSelector = field === 'category' || field === 'storeName' || field === 'paymentAccount' || field === 'paymentMethod';
+    let list: string[] = [];
+    if (field === 'category') list = knownCategories;
+    else if (field === 'storeName') list = knownStores;
+    else if (field === 'paymentAccount') list = people;
+    else if (field === 'paymentMethod') list = PAYMENT_METHODS;
+
     let isNew = false;
     if (field === 'category' && typeof value === 'string' && !knownCategories.includes(value)) isNew = true;
     if (field === 'storeName' && typeof value === 'string' && !knownStores.includes(value)) isNew = true;
@@ -382,10 +413,39 @@ function App() {
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
               {isSpecialSelector ? (
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <select style={{ flex: 1, height: '42px', borderRadius: '8px', border: '1px solid var(--primary)', background: '#1e293b', color: 'white' }} value={list.includes(value as string) ? value as string : ''} onChange={(e) => { if (e.target.value === 'NEW') return; setTicketData({ ...ticketData, [field]: e.target.value }); setEditingField(null); }}>
-                    <option value="">Seleccionar...</option>{list.map(item => <option key={item} value={item}>{item}</option>)}{field !== 'paymentAccount' && <option value="NEW">+ Nuevo...</option>}
+                  <select
+                    style={{ flex: 1, height: '42px', borderRadius: '8px', border: '1px solid var(--primary)', background: '#1e293b', color: 'white' }}
+                    value={list.some(item => String(value).startsWith(item)) ? list.find(item => String(value).startsWith(item)) : ''}
+                    onChange={(e) => { 
+                      const val = e.target.value;
+                      if (val === 'Otros') {
+                        setTicketData({ ...ticketData, [field]: 'Otros ()' });
+                      } else {
+                        setTicketData({ ...ticketData, [field]: val });
+                        setEditingField(null);
+                      }
+                    }}
+                  >
+                    <option value="">Seleccionar...</option>
+                    {list.map(item => <option key={item} value={item}>{item}</option>)}
+                    {(field !== 'paymentAccount' && field !== 'paymentMethod') && <option value="NEW">+ Nuevo...</option>}
                   </select>
-                  {field !== 'paymentAccount' && <input autoFocus placeholder="Nuevo..." type="text" value={list.includes(value as string) ? '' : value as string} onChange={(e) => { setTicketData({ ...ticketData, [field]: e.target.value }); if (field === 'storeName') setSaveAsAlias(true); }} style={{ flex: 1.5, border: '1px solid var(--primary)' }} />}
+
+                  {/* Contextual secondary input */}
+                  {field === 'paymentMethod' && String(value).startsWith('Otros') && (
+                    <input 
+                      autoFocus
+                      placeholder="¿Qué método?"
+                      type="text"
+                      value={String(value).match(/\((.*)\)/)?.[1] || ''}
+                      onChange={(e) => setTicketData({ ...ticketData, [field]: `Otros (${e.target.value})` })}
+                      style={{ flex: 1.5, border: '1px solid var(--primary)' }}
+                    />
+                  )}
+
+                  {field !== 'paymentAccount' && field !== 'paymentMethod' && (
+                    <input autoFocus placeholder="Nuevo..." type="text" value={list.includes(value as string) ? '' : value as string} onChange={(e) => { setTicketData({ ...ticketData, [field]: e.target.value }); if (field === 'storeName') setSaveAsAlias(true); }} style={{ flex: 1.5, border: '1px solid var(--primary)' }} />
+                  )}
                   <button onClick={() => setEditingField(null)} style={{ background: 'var(--primary)', padding: '0.5rem' }}> <Check size={18} /> </button>
                 </div>
               ) : field === 'description' ? (
@@ -406,7 +466,7 @@ function App() {
                 <div style={{ flex: 1, fontSize: '1rem', fontWeight: (field === 'amount' || field === 'paymentAccount') ? 'bold' : 'normal', color: field === 'amount' ? 'var(--primary)' : 'white' }}> {field === 'amount' ? `$${value}` : field === 'purchaseDate' ? String(value).replace('T', ' ') : value as string || <em style={{color: '#64748b'}}>Sin datos</em>} </div>
                 <button onClick={() => setEditingField(field)} style={{ background: 'transparent', color: '#94a3b8', padding: '0.5rem' }}> <Pencil size={16} /> </button>
               </div>
-              {field === 'storeName' && value !== originalDetectedStore && (
+              {field === 'storeName' && originalDetectedStore && value !== originalDetectedStore && (
                 <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.7rem', color: 'var(--primary)', marginTop: '0.25rem', cursor: 'pointer' }}>
                   <input type="checkbox" checked={saveAsAlias} onChange={e => setSaveAsAlias(e.target.checked)} />
                   Tratar "{value as string}" como alias de "{originalDetectedStore}"
