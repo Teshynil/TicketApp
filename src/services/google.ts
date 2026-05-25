@@ -130,8 +130,11 @@ export const appendToSheet = async (token: string, spreadsheetId: string, data: 
     const range = `${targetSheet}!A1`;
     const now = new Date();
     const timestamp = now.toLocaleString('es-MX'); 
-    // Generación de TxnID: Timestamp + Random para asegurar unicidad
-    const txnId = `TXN-${now.getTime()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
+    
+    // Deterministic TxnID: Hash of core fields
+    const rawId = `${data.purchaseDate}-${data.amount}-${data.storeName}-${data.category}`;
+    // Simple hex-like ID from string
+    const txnId = `TXN-${btoa(unescape(encodeURIComponent(rawId))).substring(0, 16).toUpperCase()}`;
 
     const values = [[
       timestamp,                    // 1. Marca Temporal

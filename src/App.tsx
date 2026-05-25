@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Camera, Settings as SettingsIcon, Check, Loader2, AlertCircle, Save, X, Upload, History as HistoryIcon, Users, Plus, Trash2, Share2, Pencil, BookMarked, Zap } from 'lucide-react';
+import { Camera, Settings as SettingsIcon, Check, Loader2, AlertCircle, Save, X, Upload, History as HistoryIcon, Users, Plus, Trash2, Share2, Pencil, BookMarked, Zap, AlertTriangle } from 'lucide-react';
 import { useConfig } from './hooks/useConfig';
 import { Settings } from './components/Settings';
 import { ModelTester } from './components/ModelTester';
@@ -137,19 +137,9 @@ function App() {
     try {
       if (!webpPhoto) return;
       setStatus('processing');
-      const data = await analyzeTicket(
-        config.geminiApiKey, 
-        webpPhoto, 
-        config.geminiModel, 
-        knownCategories, 
-        knownStores, 
-        customInstructions,
-        aliases
-      );
-      
+      const data = await analyzeTicket(config.geminiApiKey, webpPhoto, config.geminiModel, knownCategories, knownStores, customInstructions, aliases);
       setOriginalDetectedStore(data.storeName);
       setSaveAsAlias(false);
-
       if (data.paymentMethod === 'Efectivo') {
         data.paymentAccount = 'Principal';
       } else if (data.paymentMethod === 'Tarjeta' || data.paymentMethod === 'Transferencia') {
@@ -160,7 +150,6 @@ function App() {
         });
         data.paymentAccount = mapping ? mapping[2] : '';
       }
-
       setTicketData(data);
       setStatus('reviewing');
     } catch (err: any) {
@@ -200,24 +189,15 @@ function App() {
     const oldName = people[index];
     const newName = editPersonValue;
     if (!newName || oldName === newName) { setEditingPersonIdx(null); return; }
-    
     const updatedPeople = people.map((p, i) => i === index ? newName : p);
     const updatedAccounts = accounts.map(acc => [acc[0], acc[1], acc[2] === oldName ? newName : acc[2]]);
-    
     try {
       setLoadingAccounts(true);
       const current = await getSheetValues(googleToken!, config.googleSheetId!, 'SYS_LISTS!A2:B100');
-      const finalPeopleValues = updatedPeople.map((p, i) => [
-        current.values?.[i]?.[0] || "",
-        current.values?.[i]?.[1] || "",
-        p
-      ]);
+      const finalPeopleValues = updatedPeople.map((p, i) => [ current.values?.[i]?.[0] || "", current.values?.[i]?.[1] || "", p ]);
       await updateSheetValues(googleToken!, config.googleSheetId!, `SYS_LISTS!A2:C${finalPeopleValues.length + 1}`, finalPeopleValues);
       await updateSheetValues(googleToken!, config.googleSheetId!, `Accounts!A2:C${updatedAccounts.length + 1}`, updatedAccounts);
-      
-      setPeople(updatedPeople);
-      setAccounts(updatedAccounts as any);
-      setEditingPersonIdx(null);
+      setPeople(updatedPeople); setAccounts(updatedAccounts as any); setEditingPersonIdx(null);
     } catch (err) { setError('Error al renombrar persona'); } finally { setLoadingAccounts(false); }
   };
 
@@ -228,11 +208,7 @@ function App() {
       setLoadingAccounts(true);
       const current = await getSheetValues(googleToken!, config.googleSheetId!, 'SYS_LISTS!A2:B100');
       await updateSheetValues(googleToken!, config.googleSheetId!, 'SYS_LISTS!C2:C100', Array(99).fill(['']));
-      const finalValues = updated.map((p, i) => [
-        current.values?.[i]?.[0] || "",
-        current.values?.[i]?.[1] || "",
-        p
-      ]);
+      const finalValues = updated.map((p, i) => [ current.values?.[i]?.[0] || "", current.values?.[i]?.[1] || "", p ]);
       await updateSheetValues(googleToken!, config.googleSheetId!, `SYS_LISTS!A2:C${finalValues.length + 1}`, finalValues);
       setPeople(updated);
     } catch (err) { setError('Error al eliminar persona'); } finally { setLoadingAccounts(false); }
@@ -369,6 +345,13 @@ function App() {
     try { return await ensureSchema(googleToken, sheetId); } catch (e: any) { return { success: false, message: e.message }; }
   };
 
+  const isDuplicate = () => {
+    if (!ticketData) return false;
+    const rawId = `${ticketData.purchaseDate}-${ticketData.amount}-${ticketData.storeName}-${ticketData.category}`;
+    const currentTxnId = `TXN-${btoa(unescape(encodeURIComponent(rawId))).substring(0, 16).toUpperCase()}`;
+    return history.some(row => row[9] === currentTxnId);
+  };
+
   if (showSettings) {
     return (
       <div className="container">
@@ -384,8 +367,8 @@ function App() {
     const isSpecialSelector = field === 'category' || field === 'storeName' || field === 'paymentAccount';
     const list = field === 'category' ? knownCategories : field === 'storeName' ? knownStores : people;
     let isNew = false;
-    if (field === 'category' && value && !knownCategories.includes(value as string)) isNew = true;
-    if (field === 'storeName' && value && !knownStores.includes(value as string)) isNew = true;
+    if (field === 'category' && typeof value === 'string' && !knownCategories.includes(value)) isNew = true;
+    if (field === 'storeName' && typeof value === 'string' && !knownStores.includes(value)) isNew = true;
 
     return (
       <div style={{ marginBottom: '1rem' }}>
@@ -559,16 +542,40 @@ function App() {
           <div className="card" style={{ textAlign: 'center', padding: '4rem 2rem' }}><Loader2 size={48} className="animate-spin" style={{ margin: '0 auto 1.5rem' }} /><h2>{status === 'processing' ? 'Analizando...' : 'Guardando...'}</h2></div>
         )}
         {status === 'reviewing' && ticketData && (
-          <div className="card">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}><h3>Revisar Ticket</h3><button onClick={() => setStatus('idle')}><X size={20} /></button></div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-              {renderEditableField('Proveedor', 'storeName')} {renderEditableField('Fecha y Hora', 'purchaseDate')}
-              <div style={{ display: 'flex', gap: '1rem' }}> {renderEditableField('Método', 'paymentMethod')} {renderEditableField('Detalle', 'paymentDetail')} </div>
-              {renderEditableField('¿Quién pagó?', 'paymentAccount')}
-              <div style={{ display: 'flex', gap: '1rem' }}> {renderEditableField('Monto', 'amount', 'number')} {renderEditableField('Categoría', 'category')} </div>
-              {renderEditableField('Descripción', 'description')}
+          <div className="card" style={{ padding: '0', overflow: 'hidden' }}>
+            <div style={{ maxHeight: '200px', overflow: 'hidden', borderBottom: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer' }} onClick={() => window.open(webpPhoto || '', '_blank')}>
+              <img src={webpPhoto || ''} alt="Ticket" style={{ width: '100%', objectFit: 'cover', objectPosition: 'center' }} title="Click para ver completa" />
             </div>
-            <button className="primary" style={{ width: '100%', marginTop: '1.5rem' }} onClick={handleSave}><Save size={20} /> Confirmar y Guardar</button>
+
+            <div style={{ padding: '1.5rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+                <h3 style={{ margin: 0 }}>Revisar Ticket</h3>
+                <button onClick={() => setStatus('idle')} style={{ padding: '0.5rem', background: 'transparent' }}><X size={20} /></button>
+              </div>
+
+              {isDuplicate() && (
+                <div style={{ marginBottom: '1.5rem', padding: '0.75rem', borderRadius: '8px', background: 'rgba(234, 179, 8, 0.1)', color: '#eab308', border: '1px solid rgba(234, 179, 8, 0.2)', fontSize: '0.8rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <AlertTriangle size={16} /> 
+                  <span><strong>Atención:</strong> Ya existe un registro igual en tu historial.</span>
+                </div>
+              )}
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {renderEditableField('Proveedor', 'storeName')}
+                {renderEditableField('Fecha y Hora', 'purchaseDate')}
+                <div style={{ display: 'flex', gap: '1rem' }}>
+                  <div style={{ flex: 1 }}>{renderEditableField('Método', 'paymentMethod')}</div>
+                  <div style={{ flex: 1 }}>{renderEditableField('Detalle', 'paymentDetail')}</div>
+                </div>
+                {renderEditableField('¿Quién pagó?', 'paymentAccount')}
+                <div style={{ display: 'flex', gap: '1rem' }}>
+                  <div style={{ flex: 1 }}>{renderEditableField('Monto', 'amount', 'number')}</div>
+                  <div style={{ flex: 1.2 }}>{renderEditableField('Categoría', 'category')}</div>
+                </div>
+                {renderEditableField('Descripción', 'description')}
+              </div>
+              <button className="primary" style={{ width: '100%', marginTop: '1.5rem' }} onClick={handleSave}><Save size={20} /> Confirmar y Guardar</button>
+            </div>
           </div>
         )}
         {status === 'success' && (
