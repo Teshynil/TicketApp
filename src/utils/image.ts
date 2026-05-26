@@ -98,9 +98,6 @@ export const enhanceImage = async (base64Image: string): Promise<string> => {
       const ctx = canvas.getContext('2d');
       if (ctx) {
         // Apply filters to help OCR
-        // - Contrast: 1.2 (slightly boost to separate text from background)
-        // - Brightness: 1.1 (slightly brighten dark tickets)
-        // - Grayscale: To focus AI on text shapes
         ctx.filter = 'contrast(1.2) brightness(1.1)';
         ctx.drawImage(img, 0, 0);
         
@@ -116,3 +113,25 @@ export const enhanceImage = async (base64Image: string): Promise<string> => {
   });
 };
 
+/**
+ * Crops a base64 image using coordinates.
+ */
+export const cropImage = async (base64Image: string, x: number, y: number, width: number, height: number): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(img, x, y, width, height, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/webp', 0.85));
+      } else {
+        reject(new Error('Could not get canvas context'));
+      }
+    };
+    img.onerror = () => reject(new Error('Failed to load image for cropping'));
+    img.src = base64Image;
+  });
+};

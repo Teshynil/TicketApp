@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { Camera, Settings as SettingsIcon, Check, Loader2, AlertCircle, Save, X, Upload, History as HistoryIcon, Users, Plus, Trash2, Share2, Pencil, BookMarked, Zap, AlertTriangle, CloudOff, RefreshCw, Sparkles } from 'lucide-react';
+import { Camera, Settings as SettingsIcon, Check, Loader2, AlertCircle, Save, X, Upload, History as HistoryIcon, Users, Plus, Trash2, Share2, Pencil, BookMarked, Zap, AlertTriangle, CloudOff, RefreshCw, Sparkles, Undo2, Crop } from 'lucide-react';
 import { useConfig } from './hooks/useConfig';
 import { Settings } from './components/Settings';
 import { ModelTester } from './components/ModelTester';
-import { convertToLosslessWebP, fileToDataUrl, enhanceImage } from './utils/image';
+import { convertToLosslessWebP, fileToDataUrl, enhanceImage, cropImage } from './utils/image';
 import { copyToClipboard } from './utils/clipboard';
 import { analyzeTicket } from './services/gemini';
 import { initTokenClient, requestToken, uploadToDrive, appendToSheet, createSheet, getSheetValues, updateSheetValues, ensureSysLists, validateSchema, ensureSchema, getCustomInstructions } from './services/google';
@@ -28,6 +28,10 @@ function App() {
     const saved = localStorage.getItem('ticketapp_review_state');
     return saved ? JSON.parse(saved).webpPhoto : null;
   });
+  
+  // NEW: History for Undo
+  const [photoHistory, setPhotoHistory] = useState<string[]>([]);
+
   const [error, setError] = useState<string | null>(null);
   const [googleToken, setGoogleToken] = useState<string | null>(() => {
     const token = localStorage.getItem('google_token');
@@ -65,6 +69,11 @@ function App() {
   const [isViewingFullImage, setIsViewingFullImage] = useState(false);
   const [isEnhancing, setIsEnhancing] = useState(false);
 
+  // NEW: Cropping states
+  const [isCropping, setIsCropping] = useState(false);
+  const [cropRect, setCropRect] = useState({ x: 10, y: 10, w: 80, h: 80 }); // Percentages
+  const cropContainerRef = useRef<HTMLDivElement>(null);
+
   const [queue, setQueue] = useState<QueueItem[]>(() => JSON.parse(localStorage.getItem('ticketapp_offline_queue') || '[]'));
   const [isSyncing, setIsSyncing] = useState(false);
 
@@ -80,6 +89,7 @@ function App() {
     } else if (status === 'idle' || status === 'success') {
       localStorage.removeItem('ticketapp_review_state');
       localStorage.removeItem('ticketapp_original_store');
+      setPhotoHistory([]);
     }
   }, [status, ticketData, webpPhoto, originalDetectedStore]);
 
@@ -182,8 +192,8 @@ function App() {
       setTicketData(data);
       setStatus('reviewing');
     } catch (err: any) {
-      if (!navigator.onLine || err.message?.includes('Failed to fetch')) {
-        if (photoToUse) addToQueue(photoToUse);
+      if ((!navigator.onLine || err.message?.includes('Failed to fetch')) && photoToUse) {
+        addToQueue(photoToUse);
         setError('Sin conexión. El ticket se ha guardado en la cola local.');
       } else {
         setError(err.message || 'Error al procesar');
@@ -196,11 +206,47 @@ function App() {
     if (!webpPhoto) return;
     try {
       setIsEnhancing(true);
+      // Save to history before enhancing
+      setPhotoHistory(prev => [...prev, webpPhoto]);
       const enhanced = await enhanceImage(webpPhoto);
       setWebpPhoto(enhanced);
     } catch (err) {
       console.error('Enhancement failed:', err);
       alert('Fallo al mejorar la imagen');
+    } finally {
+      setIsEnhancing(false);
+    }
+  };
+
+  const handleUndo = () => {
+    if (photoHistory.length === 0) return;
+    const last = photoHistory[photoHistory.length - 1];
+    setWebpPhoto(last);
+    setPhotoHistory(prev => prev.slice(0, -1));
+  };
+
+  const handleCropSave = async () => {
+    if (!webpPhoto) return;
+    try {
+      setIsEnhancing(true);
+      // Save to history before cropping
+      setPhotoHistory(prev => [...prev, webpPhoto]);
+      
+      const img = new Image();
+      img.src = webpPhoto;
+      await new Promise(r => img.onload = r);
+      
+      const x = (cropRect.x / 100) * img.width;
+      const y = (cropRect.y / 100) * img.height;
+      const w = (cropRect.w / 100) * img.width;
+      const h = (cropRect.h / 100) * img.height;
+      
+      const cropped = await cropImage(webpPhoto, x, y, w, h);
+      setWebpPhoto(cropped);
+      setIsCropping(false);
+    } catch (err) {
+      console.error('Crop failed:', err);
+      alert('Fallo al recortar');
     } finally {
       setIsEnhancing(false);
     }
@@ -380,7 +426,7 @@ function App() {
       try {
         setLoadingHistory(true); setStatus('history');
         const data = await getSheetValues(token, config.googleSheetId!, 'TicketsForm!A2:J100');
-        if (data.values) setHistory(data.values); else setHistory([]);
+        if (data.values) setHistory(data.values.reverse()); else setHistory([]);
       } catch (err: any) { setError('Error al cargar historial'); } finally { setLoadingHistory(false); }
     };
     if (!googleToken) requestToken(); else fetchHistory(googleToken);
@@ -427,8 +473,6 @@ function App() {
     if (!ticketData) return null;
     const isEditing = editingField === field;
     const value = ticketData[field];
-    
-    // Selectors logic
     const isSpecialSelector = field === 'category' || field === 'storeName' || field === 'paymentAccount' || field === 'paymentMethod';
     let list: string[] = [];
     if (field === 'category') list = knownCategories;
@@ -451,36 +495,12 @@ function App() {
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
               {isSpecialSelector ? (
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <select
-                    style={{ flex: 1, height: '42px', borderRadius: '8px', border: '1px solid var(--primary)', background: '#1e293b', color: 'white' }}
-                    value={list.some(item => String(value).startsWith(item)) ? list.find(item => String(value).startsWith(item)) : ''}
-                    onChange={(e) => { 
-                      const val = e.target.value;
-                      if (val === 'Otros') {
-                        setTicketData({ ...ticketData, [field]: 'Otros ()' });
-                      } else {
-                        setTicketData({ ...ticketData, [field]: val });
-                        setEditingField(null);
-                      }
-                    }}
-                  >
-                    <option value="">Seleccionar...</option>
-                    {list.map(item => <option key={item} value={item}>{item}</option>)}
-                    {(field !== 'paymentAccount' && field !== 'paymentMethod') && <option value="NEW">+ Nuevo...</option>}
+                  <select style={{ flex: 1, height: '42px', borderRadius: '8px', border: '1px solid var(--primary)', background: '#1e293b', color: 'white' }} value={list.some(item => String(value).startsWith(item)) ? list.find(item => String(value).startsWith(item)) : ''} onChange={(e) => { const val = e.target.value; if (val === 'Otros') { setTicketData({ ...ticketData, [field]: 'Otros ()' }); } else { setTicketData({ ...ticketData, [field]: val }); setEditingField(null); } }}>
+                    <option value="">Seleccionar...</option>{list.map(item => <option key={item} value={item}>{item}</option>)}{(field !== 'paymentAccount' && field !== 'paymentMethod') && <option value="NEW">+ Nuevo...</option>}
                   </select>
-
-                  {/* Contextual secondary input */}
                   {field === 'paymentMethod' && String(value).startsWith('Otros') && (
-                    <input 
-                      autoFocus
-                      placeholder="¿Qué método?"
-                      type="text"
-                      value={String(value).match(/\((.*)\)/)?.[1] || ''}
-                      onChange={(e) => setTicketData({ ...ticketData, [field]: `Otros (${e.target.value})` })}
-                      style={{ flex: 1.5, border: '1px solid var(--primary)' }}
-                    />
+                    <input autoFocus placeholder="¿Qué método?" type="text" value={String(value).match(/\((.*)\)/)?.[1] || ''} onChange={(e) => setTicketData({ ...ticketData, [field]: `Otros (${e.target.value})` })} style={{ flex: 1.5, border: '1px solid var(--primary)' }} />
                   )}
-
                   {field !== 'paymentAccount' && field !== 'paymentMethod' && (
                     <input autoFocus placeholder="Nuevo..." type="text" value={list.includes(value as string) ? '' : value as string} onChange={(e) => { setTicketData({ ...ticketData, [field]: e.target.value }); if (field === 'storeName') setSaveAsAlias(true); }} style={{ flex: 1.5, border: '1px solid var(--primary)' }} />
                   )}
@@ -646,22 +666,70 @@ function App() {
           </div>
         )}
         {status === 'confirm_capture' && webpPhoto && (
-          <div className="card" style={{ padding: '0' }}>
-            <div style={{ maxHeight: '250px', overflow: 'hidden', borderBottom: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer' }} onClick={() => setIsViewingFullImage(true)}>
-              <img src={webpPhoto} alt="Preview" style={{ width: '100%', objectFit: 'cover' }} />
-            </div>
-            <div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              {isEnhancing ? (
-                <button disabled style={{ width: '100%' }}><Loader2 size={18} className="animate-spin" /> Mejorando...</button>
-              ) : (
-                <button onClick={handleEnhance} style={{ width: '100%', background: 'rgba(255,255,255,0.05)', color: 'white' }}><Sparkles size={18} /> Mejorar Calidad</button>
-              )}
-              <button className="primary" onClick={() => handleAnalyze()}><Check size={20} /> Analizar Ticket</button>
-              <div style={{ display: 'flex', gap: '0.75rem' }}>
-                <button onClick={() => setStatus('idle')} style={{ flex: 1 }}><Camera size={20} /> Repetir</button>
-                <button onClick={() => setStatus('idle')} style={{ flex: 1, background: 'rgba(239, 68, 68, 0.1)', color: '#f87171' }}>Cancelar</button>
+          <div className="card" style={{ padding: '0', position: 'relative' }}>
+            {isCropping ? (
+              <div style={{ position: 'relative', width: '100%', background: '#000', minHeight: '300px', display: 'flex', justifyContent: 'center' }}>
+                <div ref={cropContainerRef} style={{ position: 'relative', display: 'inline-block', overflow: 'hidden' }}>
+                  <img src={webpPhoto} alt="To Crop" style={{ display: 'block', maxWidth: '100%', pointerEvents: 'none' }} />
+                  {/* Crop Overlay */}
+                  <div style={{ position: 'absolute', top: `${cropRect.y}%`, left: `${cropRect.x}%`, width: `${cropRect.w}%`, height: `${cropRect.h}%`, border: '2px solid var(--primary)', boxShadow: '0 0 0 9999px rgba(0,0,0,0.5)', cursor: 'move' }}>
+                    <div style={{ position: 'absolute', bottom: 0, right: 0, width: '20px', height: '20px', background: 'var(--primary)', cursor: 'se-resize' }} 
+                      onTouchStart={(e) => {
+                        const touch = e.touches[0];
+                        const startX = touch.clientX;
+                        const startY = touch.clientY;
+                        const startW = cropRect.w;
+                        const startH = cropRect.h;
+                        const container = cropContainerRef.current;
+                        if (!container) return;
+                        const rect = container.getBoundingClientRect();
+                        
+                        const handleTouchMove = (moveEvent: TouchEvent) => {
+                          const mTouch = moveEvent.touches[0];
+                          const dw = ((mTouch.clientX - startX) / rect.width) * 100;
+                          const dh = ((mTouch.clientY - startY) / rect.height) * 100;
+                          setCropRect(prev => ({ ...prev, w: Math.max(10, Math.min(100 - prev.x, startW + dw)), h: Math.max(10, Math.min(100 - prev.y, startH + dh)) }));
+                        };
+                        const handleTouchEnd = () => {
+                          window.removeEventListener('touchmove', handleTouchMove);
+                          window.removeEventListener('touchend', handleTouchEnd);
+                        };
+                        window.addEventListener('touchmove', handleTouchMove);
+                        window.addEventListener('touchend', handleTouchEnd);
+                      }}
+                    />
+                  </div>
+                </div>
+                <div style={{ position: 'absolute', bottom: '1rem', display: 'flex', gap: '0.5rem', zIndex: 10 }}>
+                  <button className="primary" onClick={handleCropSave}><Check size={18} /> Aplicar</button>
+                  <button onClick={() => setIsCropping(false)}><X size={18} /> Cancelar</button>
+                </div>
               </div>
-            </div>
+            ) : (
+              <>
+                <div style={{ maxHeight: '350px', overflow: 'hidden', borderBottom: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer' }} onClick={() => setIsViewingFullImage(true)}>
+                  <img src={webpPhoto} alt="Preview" style={{ width: '100%', objectFit: 'cover' }} />
+                </div>
+                <div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    {isEnhancing ? (
+                      <button disabled style={{ flex: 1 }}><Loader2 size={18} className="animate-spin" /> ...</button>
+                    ) : (
+                      <button onClick={handleEnhance} style={{ flex: 1, background: 'rgba(255,255,255,0.05)', color: 'white' }} title="Mejorar calidad"><Sparkles size={18} /> Mejorar</button>
+                    )}
+                    <button onClick={() => setIsCropping(true)} style={{ flex: 1, background: 'rgba(255,255,255,0.05)', color: 'white' }} title="Recortar"><Crop size={18} /> Recortar</button>
+                    {photoHistory.length > 0 && (
+                      <button onClick={handleUndo} style={{ flex: 0.5, background: 'rgba(255,255,255,0.1)', color: '#94a3b8' }} title="Deshacer"><Undo2 size={18} /></button>
+                    )}
+                  </div>
+                  <button className="primary" onClick={() => handleAnalyze()}><Check size={20} /> Analizar Ticket</button>
+                  <div style={{ display: 'flex', gap: '0.75rem' }}>
+                    <button onClick={() => setStatus('idle')} style={{ flex: 1 }}><Camera size={20} /> Repetir</button>
+                    <button onClick={() => setStatus('idle')} style={{ flex: 1, background: 'rgba(239, 68, 68, 0.1)', color: '#f87171' }}>Cancelar</button>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         )}
         {(status === 'processing' || status === 'saving') && (
@@ -672,20 +740,17 @@ function App() {
             <div style={{ maxHeight: '200px', overflow: 'hidden', borderBottom: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer' }} onClick={() => setIsViewingFullImage(true)}>
               <img src={webpPhoto || ''} alt="Ticket" style={{ width: '100%', objectFit: 'cover', objectPosition: 'center' }} title="Click para ver completa" />
             </div>
-
             <div style={{ padding: '1.5rem' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
                 <h3 style={{ margin: 0 }}>Revisar Ticket</h3>
                 <button onClick={() => setStatus('idle')} style={{ padding: '0.5rem', background: 'transparent' }}><X size={20} /></button>
               </div>
-
               {isDuplicate() && (
                 <div style={{ marginBottom: '1.5rem', padding: '0.75rem', borderRadius: '8px', background: 'rgba(234, 179, 8, 0.1)', color: '#eab308', border: '1px solid rgba(234, 179, 8, 0.2)', fontSize: '0.8rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                   <AlertTriangle size={16} /> 
                   <span><strong>Atención:</strong> Ya existe un registro igual en tu historial.</span>
                 </div>
               )}
-              
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                 {renderEditableField('Proveedor', 'storeName')}
                 {renderEditableField('Fecha y Hora', 'purchaseDate')}
@@ -711,24 +776,14 @@ function App() {
           <div className="card" style={{ border: '1px solid var(--error)' }}><AlertCircle size={48} style={{ color: 'var(--error)', margin: '0 auto 1.5rem', display: 'block' }} /><h2>Error</h2><p>{error}</p><button className="primary" style={{ width: '100%', marginTop: '1.5rem' }} onClick={handleRetryAfterError}>{error?.includes('sesión de Google ha caducado') ? 'Volver a Intentar' : 'Ir al Inicio'}</button></div>
         )}
       </main>
-
-      {/* Full Image Modal */}
       {isViewingFullImage && webpPhoto && (
-        <div 
-          style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.95)', zIndex: 1000, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}
-          onClick={() => setIsViewingFullImage(false)}
-        >
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.95)', zIndex: 1000, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '1rem' }} onClick={() => setIsViewingFullImage(false)}>
           <button onClick={() => setIsViewingFullImage(false)} style={{ position: 'absolute', top: '1rem', right: '1rem', background: 'rgba(255,255,255,0.2)', color: 'white', borderRadius: '50%', padding: '0.5rem', zIndex: 1001, border: 'none', cursor: 'pointer' }}>
             <X size={32} />
           </button>
-          <img 
-            src={webpPhoto} 
-            alt="Ticket Full" 
-            style={{ maxWidth: '100%', maxHeight: '90vh', objectFit: 'contain', borderRadius: '8px', boxShadow: '0 0 40px rgba(0,0,0,0.5)' }} 
-          />
+          <img src={webpPhoto} alt="Ticket Full" style={{ maxWidth: '100%', maxHeight: '90vh', objectFit: 'contain', borderRadius: '8px', boxShadow: '0 0 40px rgba(0,0,0,0.5)' }} />
         </div>
       )}
-
       <footer style={{ marginTop: 'auto', padding: '2rem 0', textAlign: 'center', fontSize: '0.875rem', color: '#64748b' }}>
         Hecho por <a href="https://github.com/teshynil/" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--primary)', textDecoration: 'none', fontWeight: 'bold' }}>Teshynil</a> | versión ({APP_VERSION})
       </footer>
