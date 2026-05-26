@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import Cropper from 'react-easy-crop';
 import { Camera, Settings as SettingsIcon, Check, Loader2, AlertCircle, Save, X, Upload, History as HistoryIcon, Users, Plus, Trash2, Share2, Pencil, BookMarked, Zap, AlertTriangle, CloudOff, RefreshCw, Sparkles, Undo2, Crop } from 'lucide-react';
 import { useConfig } from './hooks/useConfig';
 import { Settings } from './components/Settings';
@@ -69,10 +70,15 @@ function App() {
   const [isViewingFullImage, setIsViewingFullImage] = useState(false);
   const [isEnhancing, setIsEnhancing] = useState(false);
 
-  // NEW: Cropping states
+  // NEW: Cropping states (react-easy-crop)
   const [isCropping, setIsCropping] = useState(false);
-  const [cropRect, setCropRect] = useState({ x: 10, y: 10, w: 80, h: 80 }); // Percentages
-  const cropContainerRef = useRef<HTMLDivElement>(null);
+  const [crop, setCrop] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
+  const [croppedAreaPixels, setCroppedAreaPixels] = useState<any>(null);
+
+  const onCropComplete = useCallback((_croppedArea: any, croppedAreaPixels: any) => {
+    setCroppedAreaPixels(croppedAreaPixels);
+  }, []);
 
   const [queue, setQueue] = useState<QueueItem[]>(() => JSON.parse(localStorage.getItem('ticketapp_offline_queue') || '[]'));
   const [isSyncing, setIsSyncing] = useState(false);
@@ -226,22 +232,19 @@ function App() {
   };
 
   const handleCropSave = async () => {
-    if (!webpPhoto) return;
+    if (!webpPhoto || !croppedAreaPixels) return;
     try {
       setIsEnhancing(true);
-      // Save to history before cropping
       setPhotoHistory(prev => [...prev, webpPhoto]);
       
-      const img = new Image();
-      img.src = webpPhoto;
-      await new Promise(r => img.onload = r);
+      const cropped = await cropImage(
+        webpPhoto, 
+        croppedAreaPixels.x, 
+        croppedAreaPixels.y, 
+        croppedAreaPixels.width, 
+        croppedAreaPixels.height
+      );
       
-      const x = (cropRect.x / 100) * img.width;
-      const y = (cropRect.y / 100) * img.height;
-      const w = (cropRect.w / 100) * img.width;
-      const h = (cropRect.h / 100) * img.height;
-      
-      const cropped = await cropImage(webpPhoto, x, y, w, h);
       setWebpPhoto(cropped);
       setIsCropping(false);
     } catch (err) {
@@ -668,41 +671,19 @@ function App() {
         {status === 'confirm_capture' && webpPhoto && (
           <div className="card" style={{ padding: '0', position: 'relative' }}>
             {isCropping ? (
-              <div style={{ position: 'relative', width: '100%', background: '#000', minHeight: '300px', display: 'flex', justifyContent: 'center' }}>
-                <div ref={cropContainerRef} style={{ position: 'relative', display: 'inline-block', overflow: 'hidden' }}>
-                  <img src={webpPhoto} alt="To Crop" style={{ display: 'block', maxWidth: '100%', pointerEvents: 'none' }} />
-                  {/* Crop Overlay */}
-                  <div style={{ position: 'absolute', top: `${cropRect.y}%`, left: `${cropRect.x}%`, width: `${cropRect.w}%`, height: `${cropRect.h}%`, border: '2px solid var(--primary)', boxShadow: '0 0 0 9999px rgba(0,0,0,0.5)', cursor: 'move' }}>
-                    <div style={{ position: 'absolute', bottom: 0, right: 0, width: '20px', height: '20px', background: 'var(--primary)', cursor: 'se-resize' }} 
-                      onTouchStart={(e) => {
-                        const touch = e.touches[0];
-                        const startX = touch.clientX;
-                        const startY = touch.clientY;
-                        const startW = cropRect.w;
-                        const startH = cropRect.h;
-                        const container = cropContainerRef.current;
-                        if (!container) return;
-                        const rect = container.getBoundingClientRect();
-                        
-                        const handleTouchMove = (moveEvent: TouchEvent) => {
-                          const mTouch = moveEvent.touches[0];
-                          const dw = ((mTouch.clientX - startX) / rect.width) * 100;
-                          const dh = ((mTouch.clientY - startY) / rect.height) * 100;
-                          setCropRect(prev => ({ ...prev, w: Math.max(10, Math.min(100 - prev.x, startW + dw)), h: Math.max(10, Math.min(100 - prev.y, startH + dh)) }));
-                        };
-                        const handleTouchEnd = () => {
-                          window.removeEventListener('touchmove', handleTouchMove);
-                          window.removeEventListener('touchend', handleTouchEnd);
-                        };
-                        window.addEventListener('touchmove', handleTouchMove);
-                        window.addEventListener('touchend', handleTouchEnd);
-                      }}
-                    />
-                  </div>
-                </div>
-                <div style={{ position: 'absolute', bottom: '1rem', display: 'flex', gap: '0.5rem', zIndex: 10 }}>
+              <div style={{ position: 'relative', width: '100%', height: '400px', background: '#000' }}>
+                <Cropper
+                  image={webpPhoto}
+                  crop={crop}
+                  zoom={zoom}
+                  aspect={undefined}
+                  onCropChange={setCrop}
+                  onZoomChange={setZoom}
+                  onCropComplete={onCropComplete}
+                />
+                <div style={{ position: 'absolute', bottom: '1rem', left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '0.5rem', zIndex: 10 }}>
                   <button className="primary" onClick={handleCropSave}><Check size={18} /> Aplicar</button>
-                  <button onClick={() => setIsCropping(false)}><X size={18} /> Cancelar</button>
+                  <button onClick={() => setIsCropping(false)} style={{ background: '#334155' }}><X size={18} /> Cancelar</button>
                 </div>
               </div>
             ) : (
