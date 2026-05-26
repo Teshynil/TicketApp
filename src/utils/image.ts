@@ -84,3 +84,35 @@ export const fileToDataUrl = (file: File): Promise<string> => {
     reader.readAsDataURL(file);
   });
 };
+
+/**
+ * Enhances a base64 image for better OCR readability.
+ */
+export const enhanceImage = async (base64Image: string): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        // Apply filters to help OCR
+        // - Contrast: 1.2 (slightly boost to separate text from background)
+        // - Brightness: 1.1 (slightly brighten dark tickets)
+        // - Grayscale: To focus AI on text shapes
+        ctx.filter = 'contrast(1.2) brightness(1.1)';
+        ctx.drawImage(img, 0, 0);
+        
+        // Convert back to base64 WebP
+        const enhancedData = canvas.toDataURL('image/webp', 0.85);
+        resolve(enhancedData);
+      } else {
+        reject(new Error('Could not get canvas context'));
+      }
+    };
+    img.onerror = () => reject(new Error('Failed to load image for enhancement'));
+    img.src = base64Image;
+  });
+};
+

@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { Camera, Settings as SettingsIcon, Check, Loader2, AlertCircle, Save, X, Upload, History as HistoryIcon, Users, Plus, Trash2, Share2, Pencil, BookMarked, Zap, AlertTriangle, CloudOff, RefreshCw } from 'lucide-react';
+import { Camera, Settings as SettingsIcon, Check, Loader2, AlertCircle, Save, X, Upload, History as HistoryIcon, Users, Plus, Trash2, Share2, Pencil, BookMarked, Zap, AlertTriangle, CloudOff, RefreshCw, Sparkles } from 'lucide-react';
 import { useConfig } from './hooks/useConfig';
 import { Settings } from './components/Settings';
 import { ModelTester } from './components/ModelTester';
-import { convertToLosslessWebP, fileToDataUrl } from './utils/image';
+import { convertToLosslessWebP, fileToDataUrl, enhanceImage } from './utils/image';
 import { copyToClipboard } from './utils/clipboard';
 import { analyzeTicket } from './services/gemini';
 import { initTokenClient, requestToken, uploadToDrive, appendToSheet, createSheet, getSheetValues, updateSheetValues, ensureSysLists, validateSchema, ensureSchema, getCustomInstructions } from './services/google';
@@ -63,8 +63,8 @@ function App() {
   const [saveAsAlias, setSaveAsAlias] = useState(false);
   const [originalDetectedStore, setOriginalDetectedStore] = useState(() => localStorage.getItem('ticketapp_original_store') || "");
   const [isViewingFullImage, setIsViewingFullImage] = useState(false);
+  const [isEnhancing, setIsEnhancing] = useState(false);
 
-  // NEW: Queue State
   const [queue, setQueue] = useState<QueueItem[]>(() => JSON.parse(localStorage.getItem('ticketapp_offline_queue') || '[]'));
   const [isSyncing, setIsSyncing] = useState(false);
 
@@ -83,7 +83,6 @@ function App() {
     }
   }, [status, ticketData, webpPhoto, originalDetectedStore]);
 
-  // Sync Queue to LocalStorage
   useEffect(() => {
     localStorage.setItem('ticketapp_offline_queue', JSON.stringify(queue));
   }, [queue]);
@@ -183,13 +182,27 @@ function App() {
       setTicketData(data);
       setStatus('reviewing');
     } catch (err: any) {
-      if ((!navigator.onLine || err.message?.includes('Failed to fetch')) && photoToUse) {
-        addToQueue(photoToUse);
+      if (!navigator.onLine || err.message?.includes('Failed to fetch')) {
+        if (photoToUse) addToQueue(photoToUse);
         setError('Sin conexión. El ticket se ha guardado en la cola local.');
       } else {
         setError(err.message || 'Error al procesar');
       }
       setStatus('error');
+    }
+  };
+
+  const handleEnhance = async () => {
+    if (!webpPhoto) return;
+    try {
+      setIsEnhancing(true);
+      const enhanced = await enhanceImage(webpPhoto);
+      setWebpPhoto(enhanced);
+    } catch (err) {
+      console.error('Enhancement failed:', err);
+      alert('Fallo al mejorar la imagen');
+    } finally {
+      setIsEnhancing(false);
     }
   };
 
@@ -205,11 +218,9 @@ function App() {
   const handleSyncQueue = async () => {
     if (!navigator.onLine) { alert("Sigue sin haber conexión."); return; }
     if (queue.length === 0) return;
-
     setIsSyncing(true);
     const item = queue[0];
     setWebpPhoto(item.photo);
-    // Remove from queue first to avoid loops
     setQueue(prev => prev.slice(1));
     await handleAnalyze(item.photo);
     setIsSyncing(false);
@@ -416,6 +427,8 @@ function App() {
     if (!ticketData) return null;
     const isEditing = editingField === field;
     const value = ticketData[field];
+    
+    // Selectors logic
     const isSpecialSelector = field === 'category' || field === 'storeName' || field === 'paymentAccount' || field === 'paymentMethod';
     let list: string[] = [];
     if (field === 'category') list = knownCategories;
@@ -438,12 +451,36 @@ function App() {
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
               {isSpecialSelector ? (
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <select style={{ flex: 1, height: '42px', borderRadius: '8px', border: '1px solid var(--primary)', background: '#1e293b', color: 'white' }} value={list.some(item => String(value).startsWith(item)) ? list.find(item => String(value).startsWith(item)) : ''} onChange={(e) => { const val = e.target.value; if (val === 'Otros') { setTicketData({ ...ticketData, [field]: 'Otros ()' }); } else { setTicketData({ ...ticketData, [field]: val }); setEditingField(null); } }}>
-                    <option value="">Seleccionar...</option>{list.map(item => <option key={item} value={item}>{item}</option>)}{(field !== 'paymentAccount' && field !== 'paymentMethod') && <option value="NEW">+ Nuevo...</option>}
+                  <select
+                    style={{ flex: 1, height: '42px', borderRadius: '8px', border: '1px solid var(--primary)', background: '#1e293b', color: 'white' }}
+                    value={list.some(item => String(value).startsWith(item)) ? list.find(item => String(value).startsWith(item)) : ''}
+                    onChange={(e) => { 
+                      const val = e.target.value;
+                      if (val === 'Otros') {
+                        setTicketData({ ...ticketData, [field]: 'Otros ()' });
+                      } else {
+                        setTicketData({ ...ticketData, [field]: val });
+                        setEditingField(null);
+                      }
+                    }}
+                  >
+                    <option value="">Seleccionar...</option>
+                    {list.map(item => <option key={item} value={item}>{item}</option>)}
+                    {(field !== 'paymentAccount' && field !== 'paymentMethod') && <option value="NEW">+ Nuevo...</option>}
                   </select>
+
+                  {/* Contextual secondary input */}
                   {field === 'paymentMethod' && String(value).startsWith('Otros') && (
-                    <input autoFocus placeholder="¿Qué método?" type="text" value={String(value).match(/\((.*)\)/)?.[1] || ''} onChange={(e) => setTicketData({ ...ticketData, [field]: `Otros (${e.target.value})` })} style={{ flex: 1.5, border: '1px solid var(--primary)' }} />
+                    <input 
+                      autoFocus
+                      placeholder="¿Qué método?"
+                      type="text"
+                      value={String(value).match(/\((.*)\)/)?.[1] || ''}
+                      onChange={(e) => setTicketData({ ...ticketData, [field]: `Otros (${e.target.value})` })}
+                      style={{ flex: 1.5, border: '1px solid var(--primary)' }}
+                    />
                   )}
+
                   {field !== 'paymentAccount' && field !== 'paymentMethod' && (
                     <input autoFocus placeholder="Nuevo..." type="text" value={list.includes(value as string) ? '' : value as string} onChange={(e) => { setTicketData({ ...ticketData, [field]: e.target.value }); if (field === 'storeName') setSaveAsAlias(true); }} style={{ flex: 1.5, border: '1px solid var(--primary)' }} />
                   )}
@@ -609,7 +646,23 @@ function App() {
           </div>
         )}
         {status === 'confirm_capture' && webpPhoto && (
-          <div className="card" style={{ padding: '0' }}><img src={webpPhoto} alt="Preview" style={{ width: '100%' }} /><div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}><button className="primary" onClick={() => handleAnalyze()}><Check size={20} /> Analizar Ticket</button><button onClick={() => setStatus('idle')}><Camera size={20} /> Repetir</button><button onClick={() => setStatus('idle')}>Cancelar</button></div></div>
+          <div className="card" style={{ padding: '0' }}>
+            <div style={{ maxHeight: '250px', overflow: 'hidden', borderBottom: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer' }} onClick={() => setIsViewingFullImage(true)}>
+              <img src={webpPhoto} alt="Preview" style={{ width: '100%', objectFit: 'cover' }} />
+            </div>
+            <div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              {isEnhancing ? (
+                <button disabled style={{ width: '100%' }}><Loader2 size={18} className="animate-spin" /> Mejorando...</button>
+              ) : (
+                <button onClick={handleEnhance} style={{ width: '100%', background: 'rgba(255,255,255,0.05)', color: 'white' }}><Sparkles size={18} /> Mejorar Calidad</button>
+              )}
+              <button className="primary" onClick={() => handleAnalyze()}><Check size={20} /> Analizar Ticket</button>
+              <div style={{ display: 'flex', gap: '0.75rem' }}>
+                <button onClick={() => setStatus('idle')} style={{ flex: 1 }}><Camera size={20} /> Repetir</button>
+                <button onClick={() => setStatus('idle')} style={{ flex: 1, background: 'rgba(239, 68, 68, 0.1)', color: '#f87171' }}>Cancelar</button>
+              </div>
+            </div>
+          </div>
         )}
         {(status === 'processing' || status === 'saving') && (
           <div className="card" style={{ textAlign: 'center', padding: '4rem 2rem' }}><Loader2 size={48} className="animate-spin" style={{ margin: '0 auto 1.5rem' }} /><h2>{status === 'processing' ? 'Analizando...' : 'Guardando...'}</h2></div>
