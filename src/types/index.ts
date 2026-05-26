@@ -26,3 +26,9 @@ export interface TicketData {
     totalPrice: number;
   }>;
 }
+
+export interface QueueItem {
+  id: string;
+  photo: string;
+  dateTaken: string;
+}

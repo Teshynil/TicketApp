@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Camera, Settings as SettingsIcon, Check, Loader2, AlertCircle, Save, X, Upload, History as HistoryIcon, Users, Plus, Trash2, Share2, Pencil, BookMarked, Zap, AlertTriangle } from 'lucide-react';
+import { Camera, Settings as SettingsIcon, Check, Loader2, AlertCircle, Save, X, Upload, History as HistoryIcon, Users, Plus, Trash2, Share2, Pencil, BookMarked, Zap, AlertTriangle, CloudOff, RefreshCw } from 'lucide-react';
 import { useConfig } from './hooks/useConfig';
 import { Settings } from './components/Settings';
 import { ModelTester } from './components/ModelTester';
@@ -8,7 +8,7 @@ import { copyToClipboard } from './utils/clipboard';
 import { analyzeTicket } from './services/gemini';
 import { initTokenClient, requestToken, uploadToDrive, appendToSheet, createSheet, getSheetValues, updateSheetValues, ensureSysLists, validateSchema, ensureSchema, getCustomInstructions } from './services/google';
 import { APP_VERSION } from './version';
-import type { TicketData } from './types';
+import type { TicketData, QueueItem } from './types';
 import './index.css';
 
 const PAYMENT_METHODS = ['Efectivo', 'Tarjeta', 'Transferencia', 'Otros'];
@@ -16,7 +16,7 @@ const PAYMENT_METHODS = ['Efectivo', 'Tarjeta', 'Transferencia', 'Otros'];
 function App() {
   const { config, saveConfig, isConfigured, getShareUrl } = useConfig();
   const [showSettings, setShowSettings] = useState(!isConfigured);
-  const [status, setStatus] = useState<'idle' | 'confirm_capture' | 'processing' | 'reviewing' | 'saving' | 'success' | 'error' | 'history' | 'accounts' | 'aliases' | 'benchmark'>(() => {
+  const [status, setStatus] = useState<'idle' | 'confirm_capture' | 'processing' | 'reviewing' | 'saving' | 'success' | 'error' | 'history' | 'accounts' | 'aliases' | 'benchmark' | 'queue'>(() => {
     const saved = localStorage.getItem('ticketapp_review_state');
     return saved ? JSON.parse(saved).status : 'idle';
   });
@@ -42,7 +42,6 @@ function App() {
   const [history, setHistory] = useState<any[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
   
-  // Cache-aware initial states
   const [accounts, setAccounts] = useState<[string, string, string][]>(() => JSON.parse(localStorage.getItem('ticketapp_cache_accounts') || '[]'));
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [newAccount, setNewAccount] = useState({ digits: '', cardName: '', person: '' });
@@ -65,6 +64,10 @@ function App() {
   const [originalDetectedStore, setOriginalDetectedStore] = useState(() => localStorage.getItem('ticketapp_original_store') || "");
   const [isViewingFullImage, setIsViewingFullImage] = useState(false);
 
+  // NEW: Queue State
+  const [queue, setQueue] = useState<QueueItem[]>(() => JSON.parse(localStorage.getItem('ticketapp_offline_queue') || '[]'));
+  const [isSyncing, setIsSyncing] = useState(false);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
 
@@ -79,6 +82,11 @@ function App() {
       localStorage.removeItem('ticketapp_original_store');
     }
   }, [status, ticketData, webpPhoto, originalDetectedStore]);
+
+  // Sync Queue to LocalStorage
+  useEffect(() => {
+    localStorage.setItem('ticketapp_offline_queue', JSON.stringify(queue));
+  }, [queue]);
 
   useEffect(() => {
     if (googleToken && isConfigured) {
@@ -121,11 +129,9 @@ function App() {
         const cats = data.values.map((row: any) => row[0]).filter(Boolean);
         const strs = data.values.map((row: any) => row[1]).filter(Boolean);
         const peopleList = data.values.map((row: any) => row[2]).filter(Boolean);
-        
         setKnownCategories(cats);
         setKnownStores(strs);
         if (peopleList.length > 0) setPeople(peopleList);
-        
         localStorage.setItem('ticketapp_cache_categories', JSON.stringify(cats));
         localStorage.setItem('ticketapp_cache_stores', JSON.stringify(strs));
         localStorage.setItem('ticketapp_cache_people', JSON.stringify(peopleList.length > 0 ? peopleList : people));
@@ -156,11 +162,12 @@ function App() {
     }
   }, [googleToken, waitingForToken]);
 
-  const handleAnalyze = async () => {
+  const handleAnalyze = async (photoOverride?: string) => {
+    const photoToUse = photoOverride || webpPhoto;
     try {
-      if (!webpPhoto) return;
+      if (!photoToUse) return;
       setStatus('processing');
-      const data = await analyzeTicket(config.geminiApiKey, webpPhoto, config.geminiModel, knownCategories, knownStores, customInstructions, aliases);
+      const data = await analyzeTicket(config.geminiApiKey, photoToUse, config.geminiModel, knownCategories, knownStores, customInstructions, aliases);
       setOriginalDetectedStore(data.storeName);
       setSaveAsAlias(false);
       if (data.paymentMethod === 'Efectivo') {
@@ -176,9 +183,36 @@ function App() {
       setTicketData(data);
       setStatus('reviewing');
     } catch (err: any) {
-      setError(err.message || 'Error al procesar');
+      if ((!navigator.onLine || err.message?.includes('Failed to fetch')) && photoToUse) {
+        addToQueue(photoToUse);
+        setError('Sin conexión. El ticket se ha guardado en la cola local.');
+      } else {
+        setError(err.message || 'Error al procesar');
+      }
       setStatus('error');
     }
+  };
+
+  const addToQueue = (photo: string) => {
+    const newItem: QueueItem = {
+      id: `Q-${Date.now()}`,
+      photo,
+      dateTaken: new Date().toISOString()
+    };
+    setQueue(prev => [...prev, newItem]);
+  };
+
+  const handleSyncQueue = async () => {
+    if (!navigator.onLine) { alert("Sigue sin haber conexión."); return; }
+    if (queue.length === 0) return;
+
+    setIsSyncing(true);
+    const item = queue[0];
+    setWebpPhoto(item.photo);
+    // Remove from queue first to avoid loops
+    setQueue(prev => prev.slice(1));
+    await handleAnalyze(item.photo);
+    setIsSyncing(false);
   };
 
   const loadAccountsView = async () => {
@@ -197,14 +231,9 @@ function App() {
     try {
       setLoadingAccounts(true);
       const current = await getSheetValues(googleToken!, config.googleSheetId!, 'SYS_LISTS!A2:B100');
-      const finalValues = updated.map((p, i) => [
-        current.values?.[i]?.[0] || "",
-        current.values?.[i]?.[1] || "",
-        p
-      ]);
+      const finalValues = updated.map((p, i) => [ current.values?.[i]?.[0] || "", current.values?.[i]?.[1] || "", p ]);
       await updateSheetValues(googleToken!, config.googleSheetId!, `SYS_LISTS!A2:C${finalValues.length + 1}`, finalValues);
-      setPeople(updated);
-      setNewPersonName('');
+      setPeople(updated); setNewPersonName('');
     } catch (err) { setError('Error al añadir persona'); } finally { setLoadingAccounts(false); }
   };
 
@@ -212,10 +241,8 @@ function App() {
     const oldName = people[index];
     const newName = editPersonValue;
     if (!newName || oldName === newName) { setEditingPersonIdx(null); return; }
-    
     const updatedPeople = people.map((p, i) => i === index ? newName : p);
     const updatedAccounts = accounts.map(acc => [acc[0], acc[1], acc[2] === oldName ? newName : acc[2]]);
-    
     try {
       setLoadingAccounts(true);
       const current = await getSheetValues(googleToken!, config.googleSheetId!, 'SYS_LISTS!A2:B100');
@@ -389,8 +416,6 @@ function App() {
     if (!ticketData) return null;
     const isEditing = editingField === field;
     const value = ticketData[field];
-    
-    // Selectors logic
     const isSpecialSelector = field === 'category' || field === 'storeName' || field === 'paymentAccount' || field === 'paymentMethod';
     let list: string[] = [];
     if (field === 'category') list = knownCategories;
@@ -413,36 +438,12 @@ function App() {
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
               {isSpecialSelector ? (
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <select
-                    style={{ flex: 1, height: '42px', borderRadius: '8px', border: '1px solid var(--primary)', background: '#1e293b', color: 'white' }}
-                    value={list.some(item => String(value).startsWith(item)) ? list.find(item => String(value).startsWith(item)) : ''}
-                    onChange={(e) => { 
-                      const val = e.target.value;
-                      if (val === 'Otros') {
-                        setTicketData({ ...ticketData, [field]: 'Otros ()' });
-                      } else {
-                        setTicketData({ ...ticketData, [field]: val });
-                        setEditingField(null);
-                      }
-                    }}
-                  >
-                    <option value="">Seleccionar...</option>
-                    {list.map(item => <option key={item} value={item}>{item}</option>)}
-                    {(field !== 'paymentAccount' && field !== 'paymentMethod') && <option value="NEW">+ Nuevo...</option>}
+                  <select style={{ flex: 1, height: '42px', borderRadius: '8px', border: '1px solid var(--primary)', background: '#1e293b', color: 'white' }} value={list.some(item => String(value).startsWith(item)) ? list.find(item => String(value).startsWith(item)) : ''} onChange={(e) => { const val = e.target.value; if (val === 'Otros') { setTicketData({ ...ticketData, [field]: 'Otros ()' }); } else { setTicketData({ ...ticketData, [field]: val }); setEditingField(null); } }}>
+                    <option value="">Seleccionar...</option>{list.map(item => <option key={item} value={item}>{item}</option>)}{(field !== 'paymentAccount' && field !== 'paymentMethod') && <option value="NEW">+ Nuevo...</option>}
                   </select>
-
-                  {/* Contextual secondary input */}
                   {field === 'paymentMethod' && String(value).startsWith('Otros') && (
-                    <input 
-                      autoFocus
-                      placeholder="¿Qué método?"
-                      type="text"
-                      value={String(value).match(/\((.*)\)/)?.[1] || ''}
-                      onChange={(e) => setTicketData({ ...ticketData, [field]: `Otros (${e.target.value})` })}
-                      style={{ flex: 1.5, border: '1px solid var(--primary)' }}
-                    />
+                    <input autoFocus placeholder="¿Qué método?" type="text" value={String(value).match(/\((.*)\)/)?.[1] || ''} onChange={(e) => setTicketData({ ...ticketData, [field]: `Otros (${e.target.value})` })} style={{ flex: 1.5, border: '1px solid var(--primary)' }} />
                   )}
-
                   {field !== 'paymentAccount' && field !== 'paymentMethod' && (
                     <input autoFocus placeholder="Nuevo..." type="text" value={list.includes(value as string) ? '' : value as string} onChange={(e) => { setTicketData({ ...ticketData, [field]: e.target.value }); if (field === 'storeName') setSaveAsAlias(true); }} style={{ flex: 1.5, border: '1px solid var(--primary)' }} />
                   )}
@@ -495,6 +496,17 @@ function App() {
       <main style={{ marginTop: '2rem' }}>
         {status === 'idle' && (
           <div className="card" style={{ padding: '3rem 2rem', textAlign: 'center' }}>
+            {queue.length > 0 && (
+              <div style={{ marginBottom: '1.5rem', padding: '1rem', background: 'rgba(56, 189, 248, 0.1)', borderRadius: '12px', border: '1px solid rgba(56, 189, 248, 0.2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: '#38bdf8' }}>
+                  <CloudOff size={20} />
+                  <span style={{ fontSize: '0.9rem', fontWeight: '500' }}>{queue.length} tickets pendientes</span>
+                </div>
+                <button onClick={handleSyncQueue} disabled={isSyncing} style={{ background: '#38bdf8', color: 'white', padding: '0.4rem 0.8rem', fontSize: '0.8rem', borderRadius: '6px' }}>
+                  {isSyncing ? <Loader2 size={14} className="animate-spin" /> : <><RefreshCw size={14} /> Sincronizar</>}
+                </button>
+              </div>
+            )}
             <Camera size={64} style={{ color: 'var(--primary)', marginBottom: '1rem' }} />
             <h2>Captura un nuevo ticket</h2>
             <div style={{ marginTop: '2rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
@@ -597,7 +609,7 @@ function App() {
           </div>
         )}
         {status === 'confirm_capture' && webpPhoto && (
-          <div className="card" style={{ padding: '0' }}><img src={webpPhoto} alt="Preview" style={{ width: '100%' }} /><div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}><button className="primary" onClick={handleAnalyze}><Check size={20} /> Analizar Ticket</button><button onClick={() => setStatus('idle')}><Camera size={20} /> Repetir</button><button onClick={() => setStatus('idle')}>Cancelar</button></div></div>
+          <div className="card" style={{ padding: '0' }}><img src={webpPhoto} alt="Preview" style={{ width: '100%' }} /><div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}><button className="primary" onClick={() => handleAnalyze()}><Check size={20} /> Analizar Ticket</button><button onClick={() => setStatus('idle')}><Camera size={20} /> Repetir</button><button onClick={() => setStatus('idle')}>Cancelar</button></div></div>
         )}
         {(status === 'processing' || status === 'saving') && (
           <div className="card" style={{ textAlign: 'center', padding: '4rem 2rem' }}><Loader2 size={48} className="animate-spin" style={{ margin: '0 auto 1.5rem' }} /><h2>{status === 'processing' ? 'Analizando...' : 'Guardando...'}</h2></div>
@@ -622,19 +634,20 @@ function App() {
               )}
               
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-              {renderEditableField('Proveedor', 'storeName')}
-              {renderEditableField('Fecha y Hora', 'purchaseDate')}
-              {renderEditableField('Método', 'paymentMethod')}
-              <div style={{ display: 'flex', gap: '1rem' }}>
-                <div style={{ flex: 1 }}>{renderEditableField('Detalle', 'paymentDetail')}</div>
-                <div style={{ flex: 1 }}>{renderEditableField('¿Quién pagó?', 'paymentAccount')}</div>
+                {renderEditableField('Proveedor', 'storeName')}
+                {renderEditableField('Fecha y Hora', 'purchaseDate')}
+                {renderEditableField('Método', 'paymentMethod')}
+                <div style={{ display: 'flex', gap: '1rem' }}>
+                  <div style={{ flex: 1 }}>{renderEditableField('Detalle', 'paymentDetail')}</div>
+                  <div style={{ flex: 1 }}>{renderEditableField('¿Quién pagó?', 'paymentAccount')}</div>
+                </div>
+                <div style={{ display: 'flex', gap: '1rem' }}>
+                  <div style={{ flex: 1 }}>{renderEditableField('Monto', 'amount', 'number')}</div>
+                  <div style={{ flex: 1.2 }}>{renderEditableField('Categoría', 'category')}</div>
+                </div>
+                {renderEditableField('Descripción', 'description')}
               </div>
-              <div style={{ display: 'flex', gap: '1rem' }}>
-                <div style={{ flex: 1 }}>{renderEditableField('Monto', 'amount', 'number')}</div>
-                <div style={{ flex: 1.2 }}>{renderEditableField('Categoría', 'category')}</div>
-              </div>
-              {renderEditableField('Descripción', 'description')}
-              </div>              <button className="primary" style={{ width: '100%', marginTop: '1.5rem' }} onClick={handleSave}><Save size={20} /> Confirmar y Guardar</button>
+              <button className="primary" style={{ width: '100%', marginTop: '1.5rem' }} onClick={handleSave}><Save size={20} /> Confirmar y Guardar</button>
             </div>
           </div>
         )}
