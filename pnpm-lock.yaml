@@ -23,6 +23,9 @@ importers:
       react-easy-crop:
         specifier: ^5.5.7
         version: 5.5.7(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      sqids:
+        specifier: ^0.3.0
+        version: 0.3.0
       workbox-window:
         specifier: ^7.4.1
         version: 7.4.1
@@ -2168,6 +2171,9 @@ packages:
     resolution: {integrity: sha512-2ymg6oRBpebeZi9UUNsgQ89bhx01TcTkmNTGnNO88imTmbSgy4nfujrgVEFKWpMTEGA11EDkTt7mqObTPdigIA==}
     engines: {node: '>= 8'}
     deprecated: The work that was done in this beta branch won't be included in future versions
+
+  sqids@0.3.0:
+    resolution: {integrity: sha512-lOQK1ucVg+W6n3FhRwwSeUijxe93b51Bfz5PMRMihVf1iVkl82ePQG7V5vwrhzB11v0NtsR25PSZRGiSomJaJw==}
 
   stop-iteration-iterator@1.1.0:
     resolution: {integrity: sha512-eLoXW/DHyl62zxY4SCaIgnRhuMr6ri4juEYARS8E6sCEqzKpOiE521Ucofdx+KnDZl5xmvGYaaKCk5FEOxJCoQ==}
@@ -4732,6 +4738,8 @@ snapshots:
   source-map@0.8.0-beta.0:
     dependencies:
       whatwg-url: 7.1.0
+
+  sqids@0.3.0: {}
 
   stop-iteration-iterator@1.1.0:
     dependencies:

@@ -1,6 +1,8 @@
+import Sqids from 'sqids';
 import type { TicketData } from "../types";
 
 let tokenClient: any = null;
+const sqids = new Sqids();
 
 export const initTokenClient = (clientId: string, callback: (resp: any) => void) => {
   const tryInit = () => {
@@ -21,7 +23,6 @@ export const initTokenClient = (clientId: string, callback: (resp: any) => void)
     const interval = setInterval(() => {
       if (tryInit()) clearInterval(interval);
     }, 500);
-    // Timeout after 10 seconds
     setTimeout(() => clearInterval(interval), 10000);
   }
 };
@@ -90,63 +91,68 @@ export const appendToSheet = async (token: string, spreadsheetId: string, data: 
   const targetSheet = 'TicketsForm';
   
   try {
-    // 1. Check if 'TicketsForm' sheet exists
     const metadata = await getSpreadsheet(token, spreadsheetId);
-    if (metadata.error) {
-      throw new Error(`Google Sheets Error: ${metadata.error.message}`);
-    }
+    if (metadata.error) throw new Error(`Google Sheets Error: ${metadata.error.message}`);
     
     const exists = metadata.sheets?.some((s: any) => s.properties.title === targetSheet);
     
     if (!exists) {
       console.log(`Sheet ${targetSheet} not found, creating it...`);
-      // 2. Create the sheet if it doesn't exist
-      const addResp = await addSheet(token, spreadsheetId, targetSheet);
-      if (addResp.error) throw new Error(addResp.error.message);
-      
-      // 3. Add headers matching the NEW schema
-      const headers = [[
-        "Marca Temporal",           // 1
-        "Fecha de Compra",         // 2 (ISO)
-        "Categoria",                // 3
-        "Proveedor",                // 4
-        "Cantidad",                 // 5
-        "Metodo de Pago",          // 6
-        "Detalle de Pago",         // 7
-        "Cuenta de Pago",          // 8 (Quien)
-        "Imagen del Ticket",        // 9
-        "TxnID"                     // 10
-      ]];
-      await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${targetSheet}!A1?valueInputOption=USER_ENTERED`, {
-        method: 'PUT',
-        headers: {
-          Authorization: "Bearer " + token,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ values: headers }),
-      });
+      await addSheet(token, spreadsheetId, targetSheet);
+      const headers = [["Marca Temporal", "Fecha de Compra", "Categoria", "Proveedor", "Cantidad", "Metodo de Pago", "Detalle de Pago", "Cuenta de Pago", "Imagen del Ticket", "TxnID"]];
+      await updateSheetValues(token, spreadsheetId, `${targetSheet}!A1`, headers);
     }
     
+    // 1. Get or Create IDs for Category and Store
+    const sysLists = await getSheetValues(token, spreadsheetId, 'SYS_LISTS!A2:D500');
+    const rows = sysLists.values || [];
+    
+    let catId = 0;
+    let storeId = 0;
+
+    // Find Category ID
+    const catRow = rows.find((r: any) => r[1] === data.category);
+    if (catRow) {
+      catId = parseInt(catRow[0]);
+    } else {
+      const maxCatId = rows.reduce((max: number, r: any) => Math.max(max, parseInt(r[0]) || 0), 0);
+      catId = maxCatId + 1;
+      await updateSheetValues(token, spreadsheetId, `SYS_LISTS!A${rows.length + 2}`, [[catId, data.category]]);
+    }
+
+    // Find Store ID
+    const storeRow = rows.find((r: any) => r[3] === data.storeName);
+    if (storeRow) {
+      storeId = parseInt(storeRow[2]);
+    } else {
+      const maxStoreId = rows.reduce((max: number, r: any) => Math.max(max, parseInt(r[2]) || 0), 0);
+      storeId = maxStoreId + 1;
+      const firstEmptyStoreRow = rows.findIndex((r: any) => !r[2]) + 2 || rows.length + 2;
+      await updateSheetValues(token, spreadsheetId, `SYS_LISTS!C${firstEmptyStoreRow}`, [[storeId, data.storeName]]);
+    }
+
     const range = `${targetSheet}!A1`;
     const now = new Date();
     const timestamp = now.toLocaleString('es-MX'); 
     
-    // Deterministic TxnID: Hash of core fields
-    const rawId = `${data.purchaseDate}-${data.amount}-${data.storeName}-${data.category}`;
-    // Simple hex-like ID from string
-    const txnId = `TXN-${btoa(unescape(encodeURIComponent(rawId))).substring(0, 16).toUpperCase()}`;
+    // 2. Deterministic TxnID using Sqids
+    // Format: [YYYYMMDD, AmountCents, StoreID, CategoryID]
+    const datePart = data.purchaseDate.split('T')[0];
+    const dateNum = parseInt(datePart.replace(/-/g, ''));
+    const amountCents = Math.round(data.amount * 100);
+    const txnId = `TXN-${sqids.encode([dateNum, amountCents, storeId, catId])}`;
 
     const values = [[
-      timestamp,                    // 1. Marca Temporal
-      data.purchaseDate,            // 2. Fecha de Compra (ISO)
-      data.category,                // 3. Categoria
-      data.storeName,               // 4. Proveedor
-      data.amount,                  // 5. Cantidad
-      data.paymentMethod,           // 6. Metodo de Pago
-      data.paymentDetail || '',     // 7. Detalle de Pago
-      data.paymentAccount || '',    // 8. Cuenta de Pago
-      data.driveLink || '',         // 9. Imagen del Ticket
-      txnId                         // 10. TxnID
+      timestamp,
+      data.purchaseDate,
+      data.category,
+      data.storeName,
+      data.amount,
+      data.paymentMethod,
+      data.paymentDetail || '',
+      data.paymentAccount || '',
+      data.driveLink || '',
+      txnId
     ]];
 
     const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}:append?valueInputOption=USER_ENTERED`, {
@@ -159,9 +165,7 @@ export const appendToSheet = async (token: string, spreadsheetId: string, data: 
     });
 
     const result = await response.json();
-    if (result.error) {
-      throw new Error(result.error.message);
-    }
+    if (result.error) throw new Error(result.error.message);
     return result;
   } catch (err: any) {
     console.error('Error in appendToSheet:', err);
@@ -181,8 +185,6 @@ export const createSheet = async (token: string, title: string) => {
         }),
     });
     const spreadsheet = await response.json();
-    
-    // Add headers to the new sheet
     const sheetName = spreadsheet.sheets?.[0]?.properties?.title || 'Sheet1';
     const headers = [["Fecha", "Hora", "Comercio", "Total", "Moneda", "Pago", "Link Drive", "Items"]];
     
@@ -212,7 +214,7 @@ export const ensureSysLists = async (token: string, spreadsheetId: string) => {
 
   if (!exists) {
     await addSheet(token, spreadsheetId, targetSheet);
-    const headers = [["Categorías", "Comercios"]];
+    const headers = [["ID_CAT", "Categoría", "ID_STORE", "Proveedor", "Personas"]];
     await updateSheetValues(token, spreadsheetId, 'SYS_LISTS!A1', headers);
   }
 };
@@ -228,7 +230,7 @@ export const getCustomInstructions = async (token: string, spreadsheetId: string
 
 const EXPECTED_SCHEMA = [
   { title: 'TicketsForm', headers: ["Marca Temporal", "Fecha de Compra", "Categoria", "Proveedor", "Cantidad", "Metodo de Pago", "Detalle de Pago", "Cuenta de Pago", "Imagen del Ticket", "TxnID"] },
-  { title: 'SYS_LISTS', headers: ["Categorías", "Comercios", "Personas"], initial: [["=UNIQUE(TicketsForm!C2:C)", "=UNIQUE(TicketsForm!D2:D)", "Principal"]] },
+  { title: 'SYS_LISTS', headers: ["ID_CAT", "Categoría", "ID_STORE", "Proveedor", "Personas"], initial: [["1", "Alimentos", "1", "General", "Principal"]] },
   { title: 'SYS_PROMPT', headers: ["Instrucciones Adicionales IA"], initial: [[""]] },
   { title: 'Accounts', headers: ["Dígitos", "Nombre Tarjeta", "Persona"] },
   { title: 'SYS_ALIASES', headers: ["Nombre Legal", "Alias Comercial"] }
@@ -243,10 +245,7 @@ export const ensureSchema = async (token: string, spreadsheetId: string) => {
       if (!existingSheets.includes(sheet.title)) {
         await addSheet(token, spreadsheetId, sheet.title);
       }
-      // Always ensure headers are correct in the first row
       await updateSheetValues(token, spreadsheetId, `${sheet.title}!A1`, [sheet.headers]);
-      
-      // If it's a new sheet and has initial data, add it
       if (!existingSheets.includes(sheet.title) && sheet.initial) {
         await updateSheetValues(token, spreadsheetId, `${sheet.title}!A2`, sheet.initial);
       }
@@ -261,24 +260,18 @@ export const validateSchema = async (token: string, spreadsheetId: string) => {
   try {
     const metadata = await getSpreadsheet(token, spreadsheetId);
     if (metadata.error) throw new Error(metadata.error.message);
-    
     const existingSheets = metadata.sheets?.map((s: any) => s.properties.title) || [];
-    
     for (const sheet of EXPECTED_SCHEMA) {
       if (!existingSheets.includes(sheet.title)) {
         return { success: false, message: `Falta la hoja: ${sheet.title}` };
       }
-      
-      // Check headers
       const data = await getSheetValues(token, spreadsheetId, `${sheet.title}!1:1`);
       const actualHeaders = data.values?.[0] || [];
       const missingHeaders = sheet.headers.filter((h, i) => actualHeaders[i] !== h);
-      
       if (missingHeaders.length > 0) {
         return { success: false, message: `Encabezados incorrectos en ${sheet.title}. Faltan o difieren: ${missingHeaders.join(', ')}` };
       }
     }
-    
     return { success: true, message: "Hojas y encabezados validados correctamente." };
   } catch (err: any) {
     return { success: false, message: `Error de validación: ${err.message}` };

@@ -39,7 +39,6 @@ export const convertToLosslessWebP = async (base64Image: string): Promise<string
     img.onload = () => {
       const canvas = document.createElement('canvas');
       
-      // Resize if too large (max 1600px width/height for tickets is plenty)
       const MAX_DIM = 1600;
       let width = img.width;
       let height = img.height;
@@ -61,7 +60,6 @@ export const convertToLosslessWebP = async (base64Image: string): Promise<string
       const ctx = canvas.getContext('2d');
       if (ctx) {
         ctx.drawImage(img, 0, 0, width, height);
-        // Using balanced quality for webp to reduce weight
         const webpData = canvas.toDataURL('image/webp', 0.8);
         resolve(webpData);
       } else {
@@ -97,11 +95,8 @@ export const enhanceImage = async (base64Image: string): Promise<string> => {
       canvas.height = img.height;
       const ctx = canvas.getContext('2d');
       if (ctx) {
-        // Apply filters to help OCR
         ctx.filter = 'contrast(1.2) brightness(1.1)';
         ctx.drawImage(img, 0, 0);
-        
-        // Convert back to base64 WebP
         const enhancedData = canvas.toDataURL('image/webp', 0.85);
         resolve(enhancedData);
       } else {
@@ -114,24 +109,73 @@ export const enhanceImage = async (base64Image: string): Promise<string> => {
 };
 
 /**
- * Crops a base64 image using coordinates.
+ * Crops and rotates a base64 image.
  */
-export const cropImage = async (base64Image: string, x: number, y: number, width: number, height: number): Promise<string> => {
+export const cropImage = async (
+  base64Image: string, 
+  x: number, 
+  y: number, 
+  width: number, 
+  height: number,
+  rotation: number = 0
+): Promise<string> => {
   return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => {
+    const image = new Image();
+    image.onload = () => {
       const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
       const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(img, x, y, width, height, 0, 0, width, height);
-        resolve(canvas.toDataURL('image/webp', 0.85));
-      } else {
+
+      if (!ctx) {
         reject(new Error('Could not get canvas context'));
+        return;
       }
+
+      const rotRad = (rotation * Math.PI) / 180;
+      // Calculate needed canvas size for rotation
+      const { width: bWidth, height: bHeight } = getBoundingRect(image.width, image.height, rotation);
+      
+      canvas.width = bWidth;
+      canvas.height = bHeight;
+
+      ctx.translate(bWidth / 2, bHeight / 2);
+      ctx.rotate(rotRad);
+      ctx.drawImage(image, -image.width / 2, -image.height / 2);
+
+      // Now create the final cropped canvas
+      const croppedCanvas = document.createElement('canvas');
+      const croppedCtx = croppedCanvas.getContext('2d');
+
+      if (!croppedCtx) {
+        reject(new Error('Could not get cropped canvas context'));
+        return;
+      }
+
+      croppedCanvas.width = width;
+      croppedCanvas.height = height;
+
+      croppedCtx.drawImage(
+        canvas,
+        x,
+        y,
+        width,
+        height,
+        0,
+        0,
+        width,
+        height
+      );
+
+      resolve(croppedCanvas.toDataURL('image/webp', 0.85));
     };
-    img.onerror = () => reject(new Error('Failed to load image for cropping'));
-    img.src = base64Image;
+    image.onerror = () => reject(new Error('Failed to load image for cropping'));
+    image.src = base64Image;
   });
 };
+
+function getBoundingRect(width: number, height: number, rotation: number) {
+  const rad = (rotation * Math.PI) / 180;
+  return {
+    width: Math.abs(width * Math.cos(rad)) + Math.abs(height * Math.sin(rad)),
+    height: Math.abs(width * Math.sin(rad)) + Math.abs(height * Math.cos(rad)),
+  };
+}

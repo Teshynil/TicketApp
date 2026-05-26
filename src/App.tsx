@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Cropper from 'react-easy-crop';
-import { Camera, Settings as SettingsIcon, Check, Loader2, AlertCircle, Save, X, Upload, History as HistoryIcon, Users, Plus, Trash2, Share2, Pencil, BookMarked, Zap, AlertTriangle, CloudOff, RefreshCw, Sparkles, Undo2, Crop } from 'lucide-react';
+import { Camera, Settings as SettingsIcon, Check, Loader2, AlertCircle, Save, X, Upload, History as HistoryIcon, Users, Plus, Trash2, Share2, Pencil, BookMarked, Zap, AlertTriangle, CloudOff, RefreshCw, Sparkles, Undo2, Crop, RotateCw, RotateCcw } from 'lucide-react';
 import { useConfig } from './hooks/useConfig';
 import { Settings } from './components/Settings';
 import { ModelTester } from './components/ModelTester';
@@ -30,7 +30,6 @@ function App() {
     return saved ? JSON.parse(saved).webpPhoto : null;
   });
   
-  // NEW: History for Undo
   const [photoHistory, setPhotoHistory] = useState<string[]>([]);
 
   const [error, setError] = useState<string | null>(null);
@@ -74,6 +73,7 @@ function App() {
   const [isCropping, setIsCropping] = useState(false);
   const [crop, setCrop] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
+  const [rotation, setRotation] = useState(0);
   const [croppedAreaPixels, setCroppedAreaPixels] = useState<any>(null);
 
   const onCropComplete = useCallback((_croppedArea: any, croppedAreaPixels: any) => {
@@ -139,11 +139,11 @@ function App() {
     try {
       if (!config.googleSheetId || !googleToken) return;
       await ensureSysLists(googleToken, config.googleSheetId);
-      const data = await getSheetValues(googleToken, config.googleSheetId, 'SYS_LISTS!A2:C100');
+      const data = await getSheetValues(googleToken, config.googleSheetId, 'SYS_LISTS!A2:E500');
       if (data.values) {
-        const cats = data.values.map((row: any) => row[0]).filter(Boolean);
-        const strs = data.values.map((row: any) => row[1]).filter(Boolean);
-        const peopleList = data.values.map((row: any) => row[2]).filter(Boolean);
+        const cats = data.values.map((row: any) => row[1]).filter(Boolean);
+        const strs = data.values.map((row: any) => row[3]).filter(Boolean);
+        const peopleList = data.values.map((row: any) => row[4]).filter(Boolean);
         setKnownCategories(cats);
         setKnownStores(strs);
         if (peopleList.length > 0) setPeople(peopleList);
@@ -212,7 +212,6 @@ function App() {
     if (!webpPhoto) return;
     try {
       setIsEnhancing(true);
-      // Save to history before enhancing
       setPhotoHistory(prev => [...prev, webpPhoto]);
       const enhanced = await enhanceImage(webpPhoto);
       setWebpPhoto(enhanced);
@@ -236,16 +235,16 @@ function App() {
     try {
       setIsEnhancing(true);
       setPhotoHistory(prev => [...prev, webpPhoto]);
-      
       const cropped = await cropImage(
         webpPhoto, 
         croppedAreaPixels.x, 
         croppedAreaPixels.y, 
         croppedAreaPixels.width, 
-        croppedAreaPixels.height
+        croppedAreaPixels.height,
+        rotation
       );
-      
       setWebpPhoto(cropped);
+      setRotation(0);
       setIsCropping(false);
     } catch (err) {
       console.error('Crop failed:', err);
@@ -290,9 +289,9 @@ function App() {
     const updated = [...people, newPersonName];
     try {
       setLoadingAccounts(true);
-      const current = await getSheetValues(googleToken!, config.googleSheetId!, 'SYS_LISTS!A2:B100');
-      const finalValues = updated.map((p, i) => [ current.values?.[i]?.[0] || "", current.values?.[i]?.[1] || "", p ]);
-      await updateSheetValues(googleToken!, config.googleSheetId!, `SYS_LISTS!A2:C${finalValues.length + 1}`, finalValues);
+      const current = await getSheetValues(googleToken!, config.googleSheetId!, 'SYS_LISTS!A2:D500');
+      const finalValues = updated.map((p, i) => [ current.values?.[i]?.[0] || "", current.values?.[i]?.[1] || "", current.values?.[i]?.[2] || "", current.values?.[i]?.[3] || "", p ]);
+      await updateSheetValues(googleToken!, config.googleSheetId!, `SYS_LISTS!A2:E${finalValues.length + 1}`, finalValues);
       setPeople(updated); setNewPersonName('');
     } catch (err) { setError('Error al añadir persona'); } finally { setLoadingAccounts(false); }
   };
@@ -305,9 +304,9 @@ function App() {
     const updatedAccounts = accounts.map(acc => [acc[0], acc[1], acc[2] === oldName ? newName : acc[2]]);
     try {
       setLoadingAccounts(true);
-      const current = await getSheetValues(googleToken!, config.googleSheetId!, 'SYS_LISTS!A2:B100');
-      const finalPeopleValues = updatedPeople.map((p, i) => [ current.values?.[i]?.[0] || "", current.values?.[i]?.[1] || "", p ]);
-      await updateSheetValues(googleToken!, config.googleSheetId!, `SYS_LISTS!A2:C${finalPeopleValues.length + 1}`, finalPeopleValues);
+      const current = await getSheetValues(googleToken!, config.googleSheetId!, 'SYS_LISTS!A2:D500');
+      const finalPeopleValues = updatedPeople.map((p, i) => [ current.values?.[i]?.[0] || "", current.values?.[i]?.[1] || "", current.values?.[i]?.[2] || "", current.values?.[i]?.[3] || "", p ]);
+      await updateSheetValues(googleToken!, config.googleSheetId!, `SYS_LISTS!A2:E${finalPeopleValues.length + 1}`, finalPeopleValues);
       await updateSheetValues(googleToken!, config.googleSheetId!, `Accounts!A2:C${updatedAccounts.length + 1}`, updatedAccounts);
       setPeople(updatedPeople); setAccounts(updatedAccounts as any); setEditingPersonIdx(null);
     } catch (err) { setError('Error al renombrar persona'); } finally { setLoadingAccounts(false); }
@@ -318,10 +317,10 @@ function App() {
     const updated = people.filter((_, i) => i !== index);
     try {
       setLoadingAccounts(true);
-      const current = await getSheetValues(googleToken!, config.googleSheetId!, 'SYS_LISTS!A2:B100');
-      await updateSheetValues(googleToken!, config.googleSheetId!, 'SYS_LISTS!C2:C100', Array(99).fill(['']));
-      const finalValues = updated.map((p, i) => [ current.values?.[i]?.[0] || "", current.values?.[i]?.[1] || "", p ]);
-      await updateSheetValues(googleToken!, config.googleSheetId!, `SYS_LISTS!A2:C${finalValues.length + 1}`, finalValues);
+      const current = await getSheetValues(googleToken!, config.googleSheetId!, 'SYS_LISTS!A2:D500');
+      await updateSheetValues(googleToken!, config.googleSheetId!, 'SYS_LISTS!E2:E500', Array(499).fill(['']));
+      const finalValues = updated.map((p, i) => [ current.values?.[i]?.[0] || "", current.values?.[i]?.[1] || "", current.values?.[i]?.[2] || "", current.values?.[i]?.[3] || "", p ]);
+      await updateSheetValues(googleToken!, config.googleSheetId!, `SYS_LISTS!A2:E${finalValues.length + 1}`, finalValues);
       setPeople(updated);
     } catch (err) { setError('Error al eliminar persona'); } finally { setLoadingAccounts(false); }
   };
@@ -459,9 +458,8 @@ function App() {
 
   const isDuplicate = () => {
     if (!ticketData) return false;
-    const rawId = `${ticketData.purchaseDate}-${ticketData.amount}-${ticketData.storeName}-${ticketData.category}`;
-    const currentTxnId = `TXN-${btoa(unescape(encodeURIComponent(rawId))).substring(0, 16).toUpperCase()}`;
-    return history.some(row => row[9] === currentTxnId);
+    // Fallback check for older format TxnIDs or if needed
+    return history.some(row => row[9]?.includes(ticketData.storeName) || row[9] === ticketData.txnId);
   };
 
   if (showSettings) {
@@ -482,7 +480,6 @@ function App() {
     else if (field === 'storeName') list = knownStores;
     else if (field === 'paymentAccount') list = people;
     else if (field === 'paymentMethod') list = PAYMENT_METHODS;
-
     let isNew = false;
     if (field === 'category' && typeof value === 'string' && !knownCategories.includes(value)) isNew = true;
     if (field === 'storeName' && typeof value === 'string' && !knownStores.includes(value)) isNew = true;
@@ -671,19 +668,24 @@ function App() {
         {status === 'confirm_capture' && webpPhoto && (
           <div className="card" style={{ padding: '0', position: 'relative' }}>
             {isCropping ? (
-              <div style={{ position: 'relative', width: '100%', height: '400px', background: '#000' }}>
+              <div style={{ position: 'relative', width: '100%', height: '450px', background: '#000', borderRadius: '12px', overflow: 'hidden' }}>
                 <Cropper
                   image={webpPhoto}
                   crop={crop}
                   zoom={zoom}
+                  rotation={rotation}
                   aspect={undefined}
                   onCropChange={setCrop}
                   onZoomChange={setZoom}
+                  onRotationChange={setRotation}
                   onCropComplete={onCropComplete}
                 />
-                <div style={{ position: 'absolute', bottom: '1rem', left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '0.5rem', zIndex: 10 }}>
-                  <button className="primary" onClick={handleCropSave}><Check size={18} /> Aplicar</button>
-                  <button onClick={() => setIsCropping(false)} style={{ background: '#334155' }}><X size={18} /> Cancelar</button>
+                <div style={{ position: 'absolute', bottom: '1rem', left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '0.5rem', zIndex: 10, background: 'rgba(0,0,0,0.6)', padding: '0.5rem', borderRadius: '12px', backdropFilter: 'blur(4px)', alignItems: 'center' }}>
+                  <button onClick={() => setRotation(r => (r - 90))} style={{ background: 'transparent', padding: '0.5rem' }}><RotateCcw size={20} /></button>
+                  <button onClick={() => setRotation(r => (r + 90))} style={{ background: 'transparent', padding: '0.5rem' }}><RotateCw size={20} /></button>
+                  <div style={{ width: '1px', height: '24px', background: 'rgba(255,255,255,0.2)', margin: '0 0.25rem' }} />
+                  <button className="primary" onClick={handleCropSave} style={{ padding: '0.5rem 1rem' }}><Check size={18} /> Aplicar</button>
+                  <button onClick={() => { setIsCropping(false); setRotation(0); }} style={{ background: '#334155', padding: '0.5rem 1rem' }}><X size={18} /></button>
                 </div>
               </div>
             ) : (

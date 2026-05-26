@@ -17,6 +17,7 @@
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-easy-crop": "^5.5.7",
+    "sqids": "^0.3.0",
     "workbox-window": "^7.4.1"
   },
   "devDependencies": {
