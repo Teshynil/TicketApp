@@ -1,7 +1,7 @@
 {
   "name": "ticketapp",
   "private": true,
-  "version": "1.0.0",
+  "version": "2.0.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,10 +13,11 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "cropperjs": "1.6.2",
     "lucide-react": "^1.16.0",
     "react": "^19.2.6",
+    "react-cropper": "^2.3.3",
     "react-dom": "^19.2.6",
-    "react-easy-crop": "^5.5.7",
     "sqids": "^0.3.0",
     "workbox-window": "^7.4.1"
   },

@@ -19,7 +19,6 @@ export const initTokenClient = (clientId: string, callback: (resp: any) => void)
   };
 
   if (!tryInit()) {
-    console.warn('Google GSI library not ready, retrying in 500ms...');
     const interval = setInterval(() => {
       if (tryInit()) clearInterval(interval);
     }, 500);
@@ -69,213 +68,18 @@ export const getSpreadsheet = async (token: string, spreadsheetId: string) => {
   return await response.json();
 };
 
-export const addSheet = async (token: string, spreadsheetId: string, title: string) => {
-  const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`, {
+export const createSpreadsheet = async (token: string, title: string) => {
+  const response = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
     method: 'POST',
     headers: {
       Authorization: "Bearer " + token,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      requests: [{
-        addSheet: {
-          properties: { title }
-        }
-      }]
+      properties: { title }
     }),
   });
   return await response.json();
-};
-
-export const appendToSheet = async (token: string, spreadsheetId: string, data: TicketData) => {
-  const targetSheet = 'TicketsForm';
-  
-  try {
-    const metadata = await getSpreadsheet(token, spreadsheetId);
-    if (metadata.error) throw new Error(`Google Sheets Error: ${metadata.error.message}`);
-    
-    const exists = metadata.sheets?.some((s: any) => s.properties.title === targetSheet);
-    
-    if (!exists) {
-      console.log(`Sheet ${targetSheet} not found, creating it...`);
-      await addSheet(token, spreadsheetId, targetSheet);
-      const headers = [["Marca Temporal", "Fecha de Compra", "Categoria", "Proveedor", "Cantidad", "Metodo de Pago", "Detalle de Pago", "Cuenta de Pago", "Imagen del Ticket", "TxnID"]];
-      await updateSheetValues(token, spreadsheetId, `${targetSheet}!A1`, headers);
-    }
-    
-    // 1. Get or Create IDs for Category and Store
-    const sysLists = await getSheetValues(token, spreadsheetId, 'SYS_LISTS!A2:D500');
-    const rows = sysLists.values || [];
-    
-    let catId = 0;
-    let storeId = 0;
-
-    // Find Category ID
-    const catRow = rows.find((r: any) => r[1] === data.category);
-    if (catRow) {
-      catId = parseInt(catRow[0]);
-    } else {
-      const maxCatId = rows.reduce((max: number, r: any) => Math.max(max, parseInt(r[0]) || 0), 0);
-      catId = maxCatId + 1;
-      await updateSheetValues(token, spreadsheetId, `SYS_LISTS!A${rows.length + 2}`, [[catId, data.category]]);
-    }
-
-    // Find Store ID
-    const storeRow = rows.find((r: any) => r[3] === data.storeName);
-    if (storeRow) {
-      storeId = parseInt(storeRow[2]);
-    } else {
-      const maxStoreId = rows.reduce((max: number, r: any) => Math.max(max, parseInt(r[2]) || 0), 0);
-      storeId = maxStoreId + 1;
-      const firstEmptyStoreRow = rows.findIndex((r: any) => !r[2]) + 2 || rows.length + 2;
-      await updateSheetValues(token, spreadsheetId, `SYS_LISTS!C${firstEmptyStoreRow}`, [[storeId, data.storeName]]);
-    }
-
-    const range = `${targetSheet}!A1`;
-    const now = new Date();
-    const timestamp = now.toLocaleString('es-MX'); 
-    
-    // 2. Deterministic TxnID using Sqids
-    // Format: [YYYYMMDD, AmountCents, StoreID, CategoryID]
-    const datePart = data.purchaseDate.split('T')[0];
-    const dateNum = parseInt(datePart.replace(/-/g, ''));
-    const amountCents = Math.round(data.amount * 100);
-    const txnId = `TXN-${sqids.encode([dateNum, amountCents, storeId, catId])}`;
-
-    const values = [[
-      timestamp,
-      data.purchaseDate,
-      data.category,
-      data.storeName,
-      data.amount,
-      data.paymentMethod,
-      data.paymentDetail || '',
-      data.paymentAccount || '',
-      data.driveLink || '',
-      txnId
-    ]];
-
-    const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}:append?valueInputOption=USER_ENTERED`, {
-      method: 'POST',
-      headers: {
-        Authorization: "Bearer " + token,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ values }),
-    });
-
-    const result = await response.json();
-    if (result.error) throw new Error(result.error.message);
-    return result;
-  } catch (err: any) {
-    console.error('Error in appendToSheet:', err);
-    throw new Error(`Error al guardar en Sheets: ${err.message}`);
-  }
-};
-
-export const createSheet = async (token: string, title: string) => {
-    const response = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
-        method: 'POST',
-        headers: {
-            Authorization: "Bearer " + token,
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            properties: { title }
-        }),
-    });
-    const spreadsheet = await response.json();
-    const sheetName = spreadsheet.sheets?.[0]?.properties?.title || 'Sheet1';
-    const headers = [["Fecha", "Hora", "Comercio", "Total", "Moneda", "Pago", "Link Drive", "Items"]];
-    
-    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheet.spreadsheetId}/values/${sheetName}!A1?valueInputOption=USER_ENTERED`, {
-      method: 'PUT',
-      headers: {
-        Authorization: "Bearer " + token,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ values: headers }),
-    });
-
-    return spreadsheet;
-};
-
-export const getSheetValues = async (token: string, spreadsheetId: string, range: string) => {
-  const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}`, {
-    headers: { Authorization: "Bearer " + token },
-  });
-  return await response.json();
-};
-
-export const ensureSysLists = async (token: string, spreadsheetId: string) => {
-  const targetSheet = 'SYS_LISTS';
-  const metadata = await getSpreadsheet(token, spreadsheetId);
-  const exists = metadata.sheets?.some((s: any) => s.properties.title === targetSheet);
-
-  if (!exists) {
-    await addSheet(token, spreadsheetId, targetSheet);
-    const headers = [["ID_CAT", "Categoría", "ID_STORE", "Proveedor", "Personas"]];
-    await updateSheetValues(token, spreadsheetId, 'SYS_LISTS!A1', headers);
-  }
-};
-
-export const getCustomInstructions = async (token: string, spreadsheetId: string): Promise<string> => {
-  try {
-    const data = await getSheetValues(token, spreadsheetId, 'SYS_PROMPT!A2');
-    return data.values?.[0]?.[0] || "";
-  } catch {
-    return "";
-  }
-};
-
-const EXPECTED_SCHEMA = [
-  { title: 'TicketsForm', headers: ["Marca Temporal", "Fecha de Compra", "Categoria", "Proveedor", "Cantidad", "Metodo de Pago", "Detalle de Pago", "Cuenta de Pago", "Imagen del Ticket", "TxnID"] },
-  { title: 'SYS_LISTS', headers: ["ID_CAT", "Categoría", "ID_STORE", "Proveedor", "Personas"], initial: [["1", "Alimentos", "1", "General", "Principal"]] },
-  { title: 'SYS_PROMPT', headers: ["Instrucciones Adicionales IA"], initial: [[""]] },
-  { title: 'Accounts', headers: ["Dígitos", "Nombre Tarjeta", "Persona"] },
-  { title: 'SYS_ALIASES', headers: ["Nombre Legal", "Alias Comercial"] }
-];
-
-export const ensureSchema = async (token: string, spreadsheetId: string) => {
-  try {
-    const metadata = await getSpreadsheet(token, spreadsheetId);
-    const existingSheets = metadata.sheets?.map((s: any) => s.properties.title) || [];
-
-    for (const sheet of EXPECTED_SCHEMA) {
-      if (!existingSheets.includes(sheet.title)) {
-        await addSheet(token, spreadsheetId, sheet.title);
-      }
-      await updateSheetValues(token, spreadsheetId, `${sheet.title}!A1`, [sheet.headers]);
-      if (!existingSheets.includes(sheet.title) && sheet.initial) {
-        await updateSheetValues(token, spreadsheetId, `${sheet.title}!A2`, sheet.initial);
-      }
-    }
-    return { success: true, message: "Schema verificado y encabezados actualizados." };
-  } catch (err: any) {
-    throw new Error(`Error al asegurar schema: ${err.message}`);
-  }
-};
-
-export const validateSchema = async (token: string, spreadsheetId: string) => {
-  try {
-    const metadata = await getSpreadsheet(token, spreadsheetId);
-    if (metadata.error) throw new Error(metadata.error.message);
-    const existingSheets = metadata.sheets?.map((s: any) => s.properties.title) || [];
-    for (const sheet of EXPECTED_SCHEMA) {
-      if (!existingSheets.includes(sheet.title)) {
-        return { success: false, message: `Falta la hoja: ${sheet.title}` };
-      }
-      const data = await getSheetValues(token, spreadsheetId, `${sheet.title}!1:1`);
-      const actualHeaders = data.values?.[0] || [];
-      const missingHeaders = sheet.headers.filter((h, i) => actualHeaders[i] !== h);
-      if (missingHeaders.length > 0) {
-        return { success: false, message: `Encabezados incorrectos en ${sheet.title}. Faltan o difieren: ${missingHeaders.join(', ')}` };
-      }
-    }
-    return { success: true, message: "Hojas y encabezados validados correctamente." };
-  } catch (err: any) {
-    return { success: false, message: `Error de validación: ${err.message}` };
-  }
 };
 
 export const updateSheetValues = async (token: string, spreadsheetId: string, range: string, values: any[][]) => {
@@ -288,4 +92,253 @@ export const updateSheetValues = async (token: string, spreadsheetId: string, ra
     body: JSON.stringify({ values }),
   });
   return await response.json();
+};
+
+export const getSheetValues = async (token: string, spreadsheetId: string, range: string) => {
+  const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}`, {
+    headers: { Authorization: "Bearer " + token },
+  });
+  return await response.json();
+};
+
+const V2_SCHEMA = [
+  { 
+    title: 'DBTABLE_TICKETS', 
+    headers: ["ID", "Timestamp_Created", "Purchase_Date", "Store_ID", "Category_ID", "Account_ID", "Amount", "Image_URL", "Description", "TxnID"],
+    format: { frozenRowCount: 1 }
+  },
+  { 
+    title: 'DBTABLE_CATEGORIES', 
+    headers: ["ID", "Name"], 
+    initial: [["1", "Alimentos"], ["2", "Transporte"], ["3", "Salud"], ["4", "Hogar"], ["5", "Entretenimiento"]],
+    format: { frozenRowCount: 1 }
+  },
+  { 
+    title: 'DBTABLE_STORES', 
+    headers: ["ID", "Legal_Name"], 
+    initial: [["1", "General"]],
+    format: { frozenRowCount: 1 }
+  },
+  { 
+    title: 'DBTABLE_ALIASES', 
+    headers: ["ID", "Store_ID", "Alias_Name"],
+    format: { frozenRowCount: 1 }
+  },
+  { 
+    title: 'DBTABLE_PEOPLE', 
+    headers: ["ID", "Name"], 
+    initial: [["1", "Principal"]],
+    format: { frozenRowCount: 1 }
+  },
+  { 
+    title: 'DBTABLE_ACCOUNTS', 
+    headers: ["ID", "Person_ID", "Type", "Digits_Identifier", "Alias_Name"],
+    format: { frozenRowCount: 1 }
+  },
+  { 
+    title: 'DBTABLE_CONFIG', 
+    headers: ["Key", "Value"], 
+    initial: [["AI_PROMPT", ""]],
+    format: { frozenRowCount: 1 },
+    hidden: true
+  }
+];
+
+export const isDatabaseInitialized = async (token: string, spreadsheetId: string): Promise<boolean> => {
+  try {
+    const metadata = await getSpreadsheet(token, spreadsheetId);
+    if (metadata.error) return false;
+    const existingSheets = metadata.sheets?.map((s: any) => s.properties.title) || [];
+    return V2_SCHEMA.every(s => existingSheets.includes(s.title));
+  } catch {
+    return false;
+  }
+};
+
+export const validateSchemaV2 = async (token: string, spreadsheetId: string) => {
+  try {
+    const metadata = await getSpreadsheet(token, spreadsheetId);
+    if (metadata.error) throw new Error(metadata.error.message);
+    
+    const existingSheets = metadata.sheets?.map((s: any) => s.properties.title) || [];
+    for (const table of V2_SCHEMA) {
+      if (!existingSheets.includes(table.title)) {
+        return { success: false, message: `Falta la tabla: ${table.title}` };
+      }
+      const data = await getSheetValues(token, spreadsheetId, `${table.title}!1:1`);
+      const actualHeaders = data.values?.[0] || [];
+      const missingHeaders = table.headers.filter((h, i) => actualHeaders[i] !== h);
+      if (missingHeaders.length > 0) {
+        return { success: false, message: `Encabezados incorrectos en ${table.title}` };
+      }
+    }
+    return { success: true, message: "Esquema V2 validado correctamente." };
+  } catch (err: any) {
+    return { success: false, message: `Error de validación: ${err.message}` };
+  }
+};
+
+export const initializeDatabaseV2 = async (token: string, spreadsheetId: string | null) => {
+  try {
+    let targetId = spreadsheetId;
+    let existingSheets: any[] = [];
+
+    if (!targetId) {
+      const newSheet = await createSpreadsheet(token, 'TicketApp Database V2');
+      targetId = newSheet.spreadsheetId;
+    } 
+    
+    const metadata = await getSpreadsheet(token, targetId as string);
+    if (metadata.error) throw new Error(metadata.error.message);
+    existingSheets = metadata.sheets || [];
+    const existingTitles = existingSheets.map((s: any) => s.properties.title);
+
+    const requests: any[] = [];
+    
+    // 1. Add missing tables
+    for (const table of V2_SCHEMA) {
+      if (!existingTitles.includes(table.title)) {
+        requests.push({
+          addSheet: {
+            properties: { 
+              title: table.title,
+              gridProperties: { frozenRowCount: table.format.frozenRowCount },
+              hidden: table.hidden || false
+            }
+          }
+        });
+      }
+    }
+
+    if (requests.length > 0) {
+      await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${targetId}:batchUpdate`, {
+        method: 'POST',
+        headers: { Authorization: "Bearer " + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requests }),
+      });
+    }
+
+    // 2. Set headers and initial values
+    for (const table of V2_SCHEMA) {
+      await updateSheetValues(token, targetId as string, `${table.title}!A1`, [table.headers]);
+      if (table.initial) {
+        const current = await getSheetValues(token, targetId as string, `${table.title}!A2:A2`);
+        if (!current.values || current.values.length === 0) {
+          await updateSheetValues(token, targetId as string, `${table.title}!A2`, table.initial);
+        }
+      }
+    }
+
+    // 3. CLEANUP: Delete default sheets (Sheet1, etc.) that are NOT part of our DBTABLE schema
+    const finalMetadata = await getSpreadsheet(token, targetId as string);
+    const finalSheets = finalMetadata.sheets || [];
+    const deleteRequests: any[] = [];
+
+    for (const s of finalSheets) {
+      const title = s.properties.title;
+      // If the sheet doesn't start with DBTABLE_ and there are at least our tables created, delete it
+      if (!title.startsWith('DBTABLE_')) {
+        deleteRequests.push({ deleteSheet: { sheetId: s.properties.sheetId } });
+      }
+    }
+
+    if (deleteRequests.length > 0 && finalSheets.length > deleteRequests.length) {
+      await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${targetId}:batchUpdate`, {
+        method: 'POST',
+        headers: { Authorization: "Bearer " + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requests: deleteRequests }),
+      });
+    }
+
+    return { success: true, message: "Base de datos V2 inicializada con éxito.", spreadsheetId: targetId };
+  } catch (err: any) {
+    throw new Error(`Error al inicializar DB: ${err.message}`);
+  }
+};
+
+export const appendToSheetV2 = async (
+  token: string, 
+  spreadsheetId: string, 
+  data: TicketData, 
+  options?: { saveAsAlias?: boolean; originalDetectedStore?: string }
+) => {
+  try {
+    const categories = await getSheetValues(token, spreadsheetId, 'DBTABLE_CATEGORIES!A2:B500');
+    const stores = await getSheetValues(token, spreadsheetId, 'DBTABLE_STORES!A2:B500');
+    const accounts = await getSheetValues(token, spreadsheetId, 'DBTABLE_ACCOUNTS!A2:E500');
+    const aliases = await getSheetValues(token, spreadsheetId, 'DBTABLE_ALIASES!A2:C500');
+
+    const catRows = categories.values || [];
+    const storeRows = stores.values || [];
+    const accountRows = accounts.values || [];
+    const aliasRows = aliases.values || [];
+
+    // 1. Resolve Category ID (Case Insensitive)
+    let catId = parseInt(catRows.find((r: any) => String(r[1]).toLowerCase() === data.category.toLowerCase())?.[0] || "0");
+    if (!catId) {
+      catId = catRows.reduce((max: number, r: any) => Math.max(max, parseInt(r[0]) || 0), 0) + 1;
+      await updateSheetValues(token, spreadsheetId, `DBTABLE_CATEGORIES!A${catId + 1}`, [[catId, data.category]]);
+    }
+
+    // 2. Resolve Store ID (Case Insensitive)
+    let storeId = parseInt(storeRows.find((r: any) => String(r[1]).toLowerCase() === data.storeName.toLowerCase())?.[0] || "0");
+    if (!storeId) {
+      storeId = storeRows.reduce((max: number, r: any) => Math.max(max, parseInt(r[0]) || 0), 0) + 1;
+      await updateSheetValues(token, spreadsheetId, `DBTABLE_STORES!A${storeId + 1}`, [[storeId, data.storeName]]);
+    }
+
+    // 3. Save Alias if requested
+    if (options?.saveAsAlias && options.originalDetectedStore && options.originalDetectedStore !== data.storeName) {
+      const aliasExists = aliasRows.some((r: any) => r[2] === options.originalDetectedStore);
+      if (!aliasExists) {
+        const nextAliasId = aliasRows.reduce((max: number, r: any) => Math.max(max, parseInt(r[0]) || 0), 0) + 1;
+        await updateSheetValues(token, spreadsheetId, `DBTABLE_ALIASES!A${nextAliasId + 1}`, [[nextAliasId, storeId, options.originalDetectedStore]]);
+      }
+    }
+
+    // 4. Resolve Account ID (or Create New)
+    let accountId = 0;
+    const cleanDetail = data.paymentDetail.replace(/\D/g, '');
+    const matchedAccount = accountRows.find((r: any) => {
+      const rDigits = String(r[3]).replace(/\D/g, '');
+      return cleanDetail && rDigits && (cleanDetail.includes(rDigits) || rDigits.includes(cleanDetail));
+    });
+
+    if (matchedAccount) {
+      accountId = parseInt(matchedAccount[0]);
+    } else if (data.paymentMethod === 'Tarjeta' || data.paymentMethod === 'Transferencia') {
+      // Create new account for this person (default to Person 1 if not specified)
+      accountId = accountRows.reduce((max: number, r: any) => Math.max(max, parseInt(r[0]) || 0), 0) + 1;
+      await updateSheetValues(token, spreadsheetId, `DBTABLE_ACCOUNTS!A${accountId + 1}`, [[accountId, 1, data.paymentMethod, data.paymentDetail, 'Nueva Tarjeta/Transf']]);
+    } else {
+      accountId = 1; // Default fallback (Cash usually matches id 1 in many systems or we can refine)
+    }
+
+    // 5. Generate Sqid TxnID
+    const dateNum = parseInt(data.purchaseDate.split('T')[0].replace(/-/g, ''));
+    const amountCents = Math.round(data.amount * 100);
+    const txnId = `TXN-${sqids.encode([dateNum, amountCents, storeId, catId])}`;
+
+    const now = new Date().toLocaleString('es-MX');
+    const values = [[ `T-${Date.now()}`, now, data.purchaseDate, storeId, catId, accountId, data.amount, data.driveLink || '', data.description || '', txnId ]];
+    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/DBTABLE_TICKETS!A1:append?valueInputOption=USER_ENTERED`, {
+      method: 'POST',
+      headers: { Authorization: "Bearer " + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ values }),
+    });
+
+    return { success: true, txnId };
+  } catch (err: any) {
+    throw new Error(`Error al guardar V2: ${err.message}`);
+  }
+};
+
+export const getV2CustomInstructions = async (token: string, spreadsheetId: string): Promise<string> => {
+  try {
+    const data = await getSheetValues(token, spreadsheetId, 'DBTABLE_CONFIG!A2:B10');
+    const row = data.values?.find((r: any) => r[0] === 'AI_PROMPT');
+    return row?.[1] || "";
+  } catch {
+    return "";
+  }
 };

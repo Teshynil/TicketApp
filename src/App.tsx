@@ -1,13 +1,24 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import Cropper from 'react-easy-crop';
-import { Camera, Settings as SettingsIcon, Check, Loader2, AlertCircle, Save, X, Upload, History as HistoryIcon, Users, Plus, Trash2, Share2, Pencil, BookMarked, Zap, AlertTriangle, CloudOff, RefreshCw, Sparkles, Undo2, Crop, RotateCw, RotateCcw } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import Cropper from 'react-cropper';
+import type { ReactCropperElement } from 'react-cropper';
+import 'cropperjs/dist/cropper.css';
+import { Camera, Settings as SettingsIcon, Check, Loader2, AlertCircle, Save, X, Upload, Pencil, CloudOff, RefreshCw, Sparkles, Undo2, Crop, RotateCw, RotateCcw, Database, Users, BookMarked, Trash2, Plus } from 'lucide-react';
 import { useConfig } from './hooks/useConfig';
 import { Settings } from './components/Settings';
-import { ModelTester } from './components/ModelTester';
-import { convertToLosslessWebP, fileToDataUrl, enhanceImage, cropImage } from './utils/image';
-import { copyToClipboard } from './utils/clipboard';
+import { convertToLosslessWebP, fileToDataUrl, enhanceImage } from './utils/image';
 import { analyzeTicket } from './services/gemini';
-import { initTokenClient, requestToken, uploadToDrive, appendToSheet, createSheet, getSheetValues, updateSheetValues, ensureSysLists, validateSchema, ensureSchema, getCustomInstructions } from './services/google';
+import { 
+  initTokenClient, 
+  requestToken, 
+  uploadToDrive, 
+  getSheetValues, 
+  updateSheetValues,
+  isDatabaseInitialized, 
+  initializeDatabaseV2, 
+  appendToSheetV2, 
+  getV2CustomInstructions,
+  validateSchemaV2
+} from './services/google';
 import { APP_VERSION } from './version';
 import type { TicketData, QueueItem } from './types';
 import './index.css';
@@ -15,9 +26,9 @@ import './index.css';
 const PAYMENT_METHODS = ['Efectivo', 'Tarjeta', 'Transferencia', 'Otros'];
 
 function App() {
-  const { config, saveConfig, isConfigured, getShareUrl } = useConfig();
+  const { config, saveConfig, isConfigured } = useConfig();
   const [showSettings, setShowSettings] = useState(!isConfigured);
-  const [status, setStatus] = useState<'idle' | 'confirm_capture' | 'processing' | 'reviewing' | 'saving' | 'success' | 'error' | 'history' | 'accounts' | 'aliases' | 'benchmark' | 'queue'>(() => {
+  const [status, setStatus] = useState<'idle' | 'confirm_capture' | 'processing' | 'reviewing' | 'saving' | 'success' | 'error' | 'queue' | 'db_init' | 'accounts' | 'aliases'>(() => {
     const saved = localStorage.getItem('ticketapp_review_state');
     return saved ? JSON.parse(saved).status : 'idle';
   });
@@ -31,7 +42,6 @@ function App() {
   });
   
   const [photoHistory, setPhotoHistory] = useState<string[]>([]);
-
   const [error, setError] = useState<string | null>(null);
   const [googleToken, setGoogleToken] = useState<string | null>(() => {
     const token = localStorage.getItem('google_token');
@@ -43,49 +53,40 @@ function App() {
     return null;
   });
   const [waitingForToken, setWaitingForToken] = useState(false);
-  const [history, setHistory] = useState<any[]>([]);
-  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [dbStatus, setDbStatus] = useState<'checking' | 'ready' | 'pending'>('checking');
   
-  const [accounts, setAccounts] = useState<[string, string, string][]>(() => JSON.parse(localStorage.getItem('ticketapp_cache_accounts') || '[]'));
-  const [loadingAccounts, setLoadingAccounts] = useState(false);
-  const [newAccount, setNewAccount] = useState({ digits: '', cardName: '', person: '' });
   const [people, setPeople] = useState<string[]>(() => JSON.parse(localStorage.getItem('ticketapp_cache_people') || '["Principal"]'));
-  const [newPersonName, setNewPersonName] = useState('');
-  const [editingPersonIdx, setEditingPersonIdx] = useState<number | null>(null);
-  const [editPersonValue, setEditPersonName] = useState('');
-  const [editingAccountIdx, setEditingAccountIdx] = useState<number | null>(null);
-  const [editAccountData, setEditAccountData] = useState({ cardName: '', person: '' });
-  const [editingField, setEditingField] = useState<string | null>(null);
-
   const [knownCategories, setKnownCategories] = useState<string[]>(() => JSON.parse(localStorage.getItem('ticketapp_cache_categories') || '[]'));
   const [knownStores, setKnownStores] = useState<string[]>(() => JSON.parse(localStorage.getItem('ticketapp_cache_stores') || '[]'));
   const [customInstructions, setCustomInstructions] = useState("");
+  const [aliases, setAliases] = useState<any[]>(() => JSON.parse(localStorage.getItem('ticketapp_cache_aliases_v2') || '[]'));
   
-  const [aliases, setAliases] = useState<[string, string][]>(() => JSON.parse(localStorage.getItem('ticketapp_cache_aliases') || '[]'));
-  const [loadingAliases, setLoadingAliases] = useState(false);
-  const [newAlias, setNewAlias] = useState({ legal: '', commercial: '' });
+  const [editingField, setEditingField] = useState<string | null>(null);
   const [saveAsAlias, setSaveAsAlias] = useState(false);
   const [originalDetectedStore, setOriginalDetectedStore] = useState(() => localStorage.getItem('ticketapp_original_store') || "");
   const [isViewingFullImage, setIsViewingFullImage] = useState(false);
   const [isEnhancing, setIsEnhancing] = useState(false);
 
-  // NEW: Cropping states (react-easy-crop)
-  const [isCropping, setIsCropping] = useState(false);
-  const [crop, setCrop] = useState({ x: 0, y: 0 });
-  const [zoom, setZoom] = useState(1);
-  const [rotation, setRotation] = useState(0);
-  const [croppedAreaPixels, setCroppedAreaPixels] = useState<any>(null);
+  // Management states
+  const [accounts, setAccounts] = useState<any[]>([]);
+  const [loadingAccounts, setLoadingAccounts] = useState(false);
+  const [newAccount, setNewAccount] = useState({ person: 'Principal', type: 'Tarjeta', digits: '', alias: '' });
+  const [newPersonName, setNewPersonName] = useState('');
+  const [newAlias, setNewAlias] = useState({ legalStore: '', aliasName: '' });
 
-  const onCropComplete = useCallback((_croppedArea: any, croppedAreaPixels: any) => {
-    setCroppedAreaPixels(croppedAreaPixels);
-  }, []);
+  const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
+  const [editAccountData, setEditAccountData] = useState<any>(null);
+  const [editingAliasId, setEditingAliasId] = useState<string | null>(null);
+  const [editAliasData, setEditAliasData] = useState<any>(null);
+
+  const [isCropping, setIsCropping] = useState(false);
+  const cropperRef = useRef<ReactCropperElement>(null);
 
   const [queue, setQueue] = useState<QueueItem[]>(() => JSON.parse(localStorage.getItem('ticketapp_offline_queue') || '[]'));
   const [isSyncing, setIsSyncing] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
-
   const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
   useEffect(() => {
@@ -105,57 +106,178 @@ function App() {
 
   useEffect(() => {
     if (googleToken && isConfigured) {
-      loadSysLists();
+      checkDatabase();
     }
-  }, [googleToken, isConfigured]);
+  }, [googleToken, isConfigured, config.googleSheetId]);
 
-  const fetchAccounts = async (token: string) => {
-    try {
-      setLoadingAccounts(true);
-      const data = await getSheetValues(token, config.googleSheetId!, 'Accounts!A2:C50');
-      if (data.values) {
-        setAccounts(data.values);
-        localStorage.setItem('ticketapp_cache_accounts', JSON.stringify(data.values));
-      } else {
-        setAccounts([]);
-      }
-    } catch (err: any) { console.error('Error fetching accounts:', err); } finally { setLoadingAccounts(false); }
+  const checkAuth = () => {
+    const token = localStorage.getItem('google_token');
+    const timestamp = localStorage.getItem('google_token_timestamp');
+    const isExpired = !token || !timestamp || (Date.now() - parseInt(timestamp) > 50 * 60 * 1000);
+    if (isExpired) {
+      requestToken();
+      return false;
+    }
+    return true;
   };
 
-  const fetchAliases = async (token: string) => {
+  const checkDatabase = async () => {
+    if (!googleToken) return;
+    if (!config.googleSheetId) { setDbStatus('pending'); setStatus('db_init'); return; }
+    setDbStatus('checking');
     try {
-      setLoadingAliases(true);
-      const data = await getSheetValues(token, config.googleSheetId!, 'SYS_ALIASES!A2:B100');
-      if (data.values) {
-        setAliases(data.values);
-        localStorage.setItem('ticketapp_cache_aliases', JSON.stringify(data.values));
-      } else {
-        setAliases([]);
+      const initialized = await isDatabaseInitialized(googleToken, config.googleSheetId);
+      if (initialized) {
+        setDbStatus('ready');
+        if (status === 'db_init') setStatus('idle');
+        loadSysLists();
+      } else { setDbStatus('pending'); setStatus('db_init'); }
+    } catch { setDbStatus('pending'); setStatus('db_init'); }
+  };
+
+  const handleInitDb = async () => {
+    if (!googleToken) return;
+    try {
+      setDbStatus('checking');
+      const result = await initializeDatabaseV2(googleToken, config.googleSheetId || null);
+      if (result.spreadsheetId && result.spreadsheetId !== config.googleSheetId) {
+        saveConfig({ ...config, googleSheetId: result.spreadsheetId });
       }
-    } catch (err) { console.error('Error fetching aliases:', err); } finally { setLoadingAliases(false); }
+      setDbStatus('ready'); setStatus('idle'); loadSysLists();
+    } catch (err: any) { setError(err.message); setStatus('error'); }
   };
 
   const loadSysLists = async () => {
     try {
       if (!config.googleSheetId || !googleToken) return;
-      await ensureSysLists(googleToken, config.googleSheetId);
-      const data = await getSheetValues(googleToken, config.googleSheetId, 'SYS_LISTS!A2:E500');
-      if (data.values) {
-        const cats = data.values.map((row: any) => row[1]).filter(Boolean);
-        const strs = data.values.map((row: any) => row[3]).filter(Boolean);
-        const peopleList = data.values.map((row: any) => row[4]).filter(Boolean);
-        setKnownCategories(cats);
-        setKnownStores(strs);
-        if (peopleList.length > 0) setPeople(peopleList);
-        localStorage.setItem('ticketapp_cache_categories', JSON.stringify(cats));
-        localStorage.setItem('ticketapp_cache_stores', JSON.stringify(strs));
-        localStorage.setItem('ticketapp_cache_people', JSON.stringify(peopleList.length > 0 ? peopleList : people));
-      }
-      await fetchAccounts(googleToken);
-      await fetchAliases(googleToken);
-      const instructions = await getCustomInstructions(googleToken, config.googleSheetId);
+      const catsData = await getSheetValues(googleToken, config.googleSheetId, 'DBTABLE_CATEGORIES!A2:B500');
+      const storesData = await getSheetValues(googleToken, config.googleSheetId, 'DBTABLE_STORES!A2:B500');
+      const peopleData = await getSheetValues(googleToken, config.googleSheetId, 'DBTABLE_PEOPLE!A2:B50');
+      const aliasesData = await getSheetValues(googleToken, config.googleSheetId, 'DBTABLE_ALIASES!A2:C500');
+      
+      const cats = catsData.values?.map((row: any) => row[1]).filter(Boolean) || [];
+      const strs = storesData.values?.map((row: any) => row[1]).filter(Boolean) || [];
+      const ppl = peopleData.values?.map((row: any) => row[1]).filter(Boolean) || ['Principal'];
+      
+      const storeMap = new Map(storesData.values?.map((row: any) => [row[0], row[1]]) || []);
+      const als = aliasesData.values?.map((row: any) => [
+        row[0], // ID
+        row[2], // Alias Name
+        storeMap.get(row[1]) || "" // Legal Store Name
+      ]).filter((row: any) => row[2]) || [];
+      
+      setKnownCategories(cats); setKnownStores(strs); setPeople(ppl); setAliases(als as any);
+      
+      localStorage.setItem('ticketapp_cache_categories', JSON.stringify(cats));
+      localStorage.setItem('ticketapp_cache_stores', JSON.stringify(strs));
+      localStorage.setItem('ticketapp_cache_people', JSON.stringify(ppl));
+      localStorage.setItem('ticketapp_cache_aliases_v2', JSON.stringify(als));
+
+      const instructions = await getV2CustomInstructions(googleToken, config.googleSheetId);
       setCustomInstructions(instructions);
     } catch (err) { console.error('Failed to load SYS_LISTS:', err); }
+  };
+
+  const loadAccounts = async () => {
+    if (!googleToken || !config.googleSheetId) return;
+    try {
+      setLoadingAccounts(true);
+      const data = await getSheetValues(googleToken, config.googleSheetId, 'DBTABLE_ACCOUNTS!A2:E100');
+      const peopleData = await getSheetValues(googleToken, config.googleSheetId, 'DBTABLE_PEOPLE!A2:B50');
+      const pplMap = new Map(peopleData.values?.map((row: any) => [row[0], row[1]]) || []);
+      
+      const accs = data.values?.map((row: any) => [
+        row[0], // ID
+        pplMap.get(row[1]) || row[1], // Person Name
+        row[2], // Type
+        row[3], // Digits
+        row[4]  // Alias
+      ]) || [];
+      setAccounts(accs);
+    } catch (err) { console.error(err); } finally { setLoadingAccounts(false); }
+  };
+
+  const handleAddPerson = async () => {
+    if (!newPersonName || people.includes(newPersonName) || !googleToken) return;
+    try {
+      setLoadingAccounts(true);
+      const current = await getSheetValues(googleToken, config.googleSheetId!, 'DBTABLE_PEOPLE!A2:A50');
+      const rows = current.values || [];
+      const nextId = rows.reduce((max: number, r: any) => Math.max(max, parseInt(r[0]) || 0), 0) + 1;
+      await updateSheetValues(googleToken, config.googleSheetId!, `DBTABLE_PEOPLE!A${rows.length + 2}`, [[nextId, newPersonName]]);
+      setNewPersonName('');
+      await loadSysLists();
+    } catch (err) { console.error(err); } finally { setLoadingAccounts(false); }
+  };
+
+  const handleAddAccount = async () => {
+    if (!newAccount.digits || !googleToken) return;
+    try {
+      setLoadingAccounts(true);
+      const peopleData = await getSheetValues(googleToken, config.googleSheetId!, 'DBTABLE_PEOPLE!A2:B50');
+      const personId = peopleData.values?.find((r: any) => r[1] === newAccount.person)?.[0] || "1";
+      const current = await getSheetValues(googleToken, config.googleSheetId!, 'DBTABLE_ACCOUNTS!A2:A100');
+      const rows = current.values || [];
+      const nextId = rows.reduce((max: number, r: any) => Math.max(max, parseInt(r[0]) || 0), 0) + 1;
+      await updateSheetValues(googleToken, config.googleSheetId!, `DBTABLE_ACCOUNTS!A${rows.length + 2}`, [[nextId, personId, newAccount.type, newAccount.digits, newAccount.alias]]);
+      setNewAccount({ ...newAccount, digits: '', alias: '' });
+      await loadAccounts();
+    } catch (err) { console.error(err); } finally { setLoadingAccounts(false); }
+  };
+
+  const handleUpdateAccount = async () => {
+    if (!editAccountData || !googleToken) return;
+    try {
+      setLoadingAccounts(true);
+      const peopleData = await getSheetValues(googleToken, config.googleSheetId!, 'DBTABLE_PEOPLE!A2:B50');
+      const personId = peopleData.values?.find((r: any) => r[1] === editAccountData.person)?.[0] || "1";
+      const data = await getSheetValues(googleToken, config.googleSheetId!, 'DBTABLE_ACCOUNTS!A2:E500');
+      const rows = data.values || [];
+      const updated = rows.map((r: any) => (String(r[0]) === String(editingAccountId)) ? [r[0], personId, editAccountData.type, editAccountData.digits, editAccountData.alias] : r);
+      await updateSheetValues(googleToken, config.googleSheetId!, 'DBTABLE_ACCOUNTS!A2', updated);
+      setEditingAccountId(null); await loadAccounts();
+    } catch (err) { console.error(err); } finally { setLoadingAccounts(false); }
+  };
+
+  const handleAddAlias = async () => {
+    if (!newAlias.aliasName || !newAlias.legalStore || !googleToken) return;
+    try {
+      setLoadingAccounts(true);
+      const storesData = await getSheetValues(googleToken, config.googleSheetId!, 'DBTABLE_STORES!A2:B500');
+      const storeId = storesData.values?.find((r: any) => r[1] === newAlias.legalStore)?.[0] || "1";
+      const current = await getSheetValues(googleToken, config.googleSheetId!, 'DBTABLE_ALIASES!A2:A500');
+      const rows = current.values || [];
+      const nextId = rows.reduce((max: number, r: any) => Math.max(max, parseInt(r[0]) || 0), 0) + 1;
+      await updateSheetValues(googleToken, config.googleSheetId!, `DBTABLE_ALIASES!A${rows.length + 2}`, [[nextId, storeId, newAlias.aliasName]]);
+      setNewAlias({ legalStore: '', aliasName: '' }); await loadSysLists();
+    } catch (err) { console.error(err); } finally { setLoadingAccounts(false); }
+  };
+
+  const handleUpdateAlias = async () => {
+    if (!editAliasData || !googleToken) return;
+    try {
+      setLoadingAccounts(true);
+      const storesData = await getSheetValues(googleToken, config.googleSheetId!, 'DBTABLE_STORES!A2:B500');
+      const storeId = storesData.values?.find((r: any) => r[1] === editAliasData.legalStore)?.[0] || "1";
+      const data = await getSheetValues(googleToken, config.googleSheetId!, 'DBTABLE_ALIASES!A2:C500');
+      const rows = data.values || [];
+      const updated = rows.map((r: any) => (String(r[0]) === String(editingAliasId)) ? [r[0], storeId, editAliasData.aliasName] : r);
+      await updateSheetValues(googleToken, config.googleSheetId!, 'DBTABLE_ALIASES!A2', updated);
+      setEditingAliasId(null); await loadSysLists();
+    } catch (err) { console.error(err); } finally { setLoadingAccounts(false); }
+  };
+
+  const handleDeleteEntry = async (table: string, id: string) => {
+    if (!googleToken || !config.googleSheetId) return;
+    try {
+      setLoadingAccounts(true);
+      const data = await getSheetValues(googleToken, config.googleSheetId, `${table}!A2:E500`);
+      const rows = data.values || [];
+      const filtered = rows.filter((r: any) => String(r[0]) !== String(id));
+      await updateSheetValues(googleToken, config.googleSheetId, `${table}!A2:E500`, Array(499).fill(['', '', '', '', '']));
+      if (filtered.length > 0) await updateSheetValues(googleToken, config.googleSheetId, `${table}!A2`, filtered);
+      if (table === 'DBTABLE_ACCOUNTS') await loadAccounts(); else await loadSysLists();
+    } catch (err) { console.error(err); } finally { setLoadingAccounts(false); }
   };
 
   useEffect(() => {
@@ -179,33 +301,18 @@ function App() {
 
   const handleAnalyze = async (photoOverride?: string) => {
     const photoToUse = photoOverride || webpPhoto;
+    if (!photoToUse) return;
+    if (!checkAuth()) return;
     try {
-      if (!photoToUse) return;
       setStatus('processing');
-      const data = await analyzeTicket(config.geminiApiKey, photoToUse, config.geminiModel, knownCategories, knownStores, customInstructions, aliases);
+      const aliasPromptList: [string, string][] = aliases.map(a => [a[1], a[2]]);
+      const data = await analyzeTicket(config.geminiApiKey, photoToUse, config.geminiModel, knownCategories, knownStores, customInstructions, aliasPromptList);
       setOriginalDetectedStore(data.storeName);
       setSaveAsAlias(false);
-      if (data.paymentMethod === 'Efectivo') {
-        data.paymentAccount = 'Principal';
-      } else if (data.paymentMethod === 'Tarjeta' || data.paymentMethod === 'Transferencia') {
-        const cleanDetail = data.paymentDetail.replace(/\D/g, '');
-        const mapping = accounts.find(([digits]) => {
-          const cleanMapDigits = String(digits).replace("'", "");
-          return cleanDetail.includes(cleanMapDigits) || cleanMapDigits.includes(cleanDetail);
-        });
-        data.paymentAccount = mapping ? mapping[2] : '';
-      }
+      if (data.paymentMethod === 'Efectivo') data.paymentAccount = 'Principal';
       setTicketData(data);
       setStatus('reviewing');
-    } catch (err: any) {
-      if ((!navigator.onLine || err.message?.includes('Failed to fetch')) && photoToUse) {
-        addToQueue(photoToUse);
-        setError('Sin conexión. El ticket se ha guardado en la cola local.');
-      } else {
-        setError(err.message || 'Error al procesar');
-      }
-      setStatus('error');
-    }
+    } catch (err: any) { addToQueue(photoToUse); setError('Error en análisis o conexión. El ticket se ha guardado en la cola local.'); setStatus('error'); }
   };
 
   const handleEnhance = async () => {
@@ -215,51 +322,29 @@ function App() {
       setPhotoHistory(prev => [...prev, webpPhoto]);
       const enhanced = await enhanceImage(webpPhoto);
       setWebpPhoto(enhanced);
-    } catch (err) {
-      console.error('Enhancement failed:', err);
-      alert('Fallo al mejorar la imagen');
-    } finally {
-      setIsEnhancing(false);
-    }
+    } catch (err) { console.error(err); alert('Fallo al mejorar la imagen'); } finally { setIsEnhancing(false); }
   };
 
   const handleUndo = () => {
     if (photoHistory.length === 0) return;
     const last = photoHistory[photoHistory.length - 1];
-    setWebpPhoto(last);
-    setPhotoHistory(prev => prev.slice(0, -1));
+    setWebpPhoto(last); setPhotoHistory(prev => prev.slice(0, -1));
   };
 
   const handleCropSave = async () => {
-    if (!webpPhoto || !croppedAreaPixels) return;
+    const cropper = cropperRef.current?.cropper;
+    if (!cropper || !webpPhoto) return;
     try {
       setIsEnhancing(true);
       setPhotoHistory(prev => [...prev, webpPhoto]);
-      const cropped = await cropImage(
-        webpPhoto, 
-        croppedAreaPixels.x, 
-        croppedAreaPixels.y, 
-        croppedAreaPixels.width, 
-        croppedAreaPixels.height,
-        rotation
-      );
+      const cropped = cropper.getCroppedCanvas().toDataURL('image/webp', 0.85);
       setWebpPhoto(cropped);
-      setRotation(0);
       setIsCropping(false);
-    } catch (err) {
-      console.error('Crop failed:', err);
-      alert('Fallo al recortar');
-    } finally {
-      setIsEnhancing(false);
-    }
+    } catch (err) { console.error(err); alert('Fallo al recortar'); } finally { setIsEnhancing(false); }
   };
 
   const addToQueue = (photo: string) => {
-    const newItem: QueueItem = {
-      id: `Q-${Date.now()}`,
-      photo,
-      dateTaken: new Date().toISOString()
-    };
+    const newItem: QueueItem = { id: `Q-${Date.now()}`, photo, dateTaken: new Date().toISOString() };
     setQueue(prev => [...prev, newItem]);
   };
 
@@ -274,139 +359,14 @@ function App() {
     setIsSyncing(false);
   };
 
-  const loadAccountsView = async () => {
-    setStatus('accounts');
-    if (!googleToken) requestToken(); else await fetchAccounts(googleToken);
-  };
-
-  const loadAliasesView = async () => {
-    setStatus('aliases');
-    if (!googleToken) requestToken(); else await fetchAliases(googleToken);
-  };
-
-  const handleAddPerson = async () => {
-    if (!newPersonName || people.includes(newPersonName)) return;
-    const updated = [...people, newPersonName];
-    try {
-      setLoadingAccounts(true);
-      const current = await getSheetValues(googleToken!, config.googleSheetId!, 'SYS_LISTS!A2:D500');
-      const finalValues = updated.map((p, i) => [ current.values?.[i]?.[0] || "", current.values?.[i]?.[1] || "", current.values?.[i]?.[2] || "", current.values?.[i]?.[3] || "", p ]);
-      await updateSheetValues(googleToken!, config.googleSheetId!, `SYS_LISTS!A2:E${finalValues.length + 1}`, finalValues);
-      setPeople(updated); setNewPersonName('');
-    } catch (err) { setError('Error al añadir persona'); } finally { setLoadingAccounts(false); }
-  };
-
-  const handleRenamePerson = async (index: number) => {
-    const oldName = people[index];
-    const newName = editPersonValue;
-    if (!newName || oldName === newName) { setEditingPersonIdx(null); return; }
-    const updatedPeople = people.map((p, i) => i === index ? newName : p);
-    const updatedAccounts = accounts.map(acc => [acc[0], acc[1], acc[2] === oldName ? newName : acc[2]]);
-    try {
-      setLoadingAccounts(true);
-      const current = await getSheetValues(googleToken!, config.googleSheetId!, 'SYS_LISTS!A2:D500');
-      const finalPeopleValues = updatedPeople.map((p, i) => [ current.values?.[i]?.[0] || "", current.values?.[i]?.[1] || "", current.values?.[i]?.[2] || "", current.values?.[i]?.[3] || "", p ]);
-      await updateSheetValues(googleToken!, config.googleSheetId!, `SYS_LISTS!A2:E${finalPeopleValues.length + 1}`, finalPeopleValues);
-      await updateSheetValues(googleToken!, config.googleSheetId!, `Accounts!A2:C${updatedAccounts.length + 1}`, updatedAccounts);
-      setPeople(updatedPeople); setAccounts(updatedAccounts as any); setEditingPersonIdx(null);
-    } catch (err) { setError('Error al renombrar persona'); } finally { setLoadingAccounts(false); }
-  };
-
-  const handleDeletePerson = async (index: number) => {
-    if (people.length <= 1) return;
-    const updated = people.filter((_, i) => i !== index);
-    try {
-      setLoadingAccounts(true);
-      const current = await getSheetValues(googleToken!, config.googleSheetId!, 'SYS_LISTS!A2:D500');
-      await updateSheetValues(googleToken!, config.googleSheetId!, 'SYS_LISTS!E2:E500', Array(499).fill(['']));
-      const finalValues = updated.map((p, i) => [ current.values?.[i]?.[0] || "", current.values?.[i]?.[1] || "", current.values?.[i]?.[2] || "", current.values?.[i]?.[3] || "", p ]);
-      await updateSheetValues(googleToken!, config.googleSheetId!, `SYS_LISTS!A2:E${finalValues.length + 1}`, finalValues);
-      setPeople(updated);
-    } catch (err) { setError('Error al eliminar persona'); } finally { setLoadingAccounts(false); }
-  };
-
-  const handleAddAccount = async () => {
-    if (!newAccount.digits || !newAccount.cardName || !newAccount.person) return;
-    const formattedDigits = `'${newAccount.digits}`;
-    const updated = [...accounts, [formattedDigits, newAccount.cardName, newAccount.person]];
-    try {
-      setLoadingAccounts(true);
-      await updateSheetValues(googleToken!, config.googleSheetId!, `Accounts!A2:C${updated.length + 1}`, updated);
-      setAccounts(updated as any);
-      setNewAccount({ digits: '', cardName: '', person: '' });
-    } catch (err) { setError('Error al guardar cuenta'); } finally { setLoadingAccounts(false); }
-  };
-
-  const handleUpdateAccount = async (index: number) => {
-    if (!editAccountData.cardName || !editAccountData.person) return;
-    const updated = accounts.map((acc, i) => i === index ? [acc[0], editAccountData.cardName, editAccountData.person] : acc);
-    try {
-      setLoadingAccounts(true);
-      await updateSheetValues(googleToken!, config.googleSheetId!, `Accounts!A2:C${updated.length + 1}`, updated);
-      setAccounts(updated as any);
-      setEditingAccountIdx(null);
-    } catch (err) { setError('Error al actualizar cuenta'); } finally { setLoadingAccounts(false); }
-  };
-
-  const handleDeleteAccount = async (index: number) => {
-    const updated = accounts.filter((_, i) => i !== index);
-    try {
-      setLoadingAccounts(true);
-      await updateSheetValues(googleToken!, config.googleSheetId!, 'Accounts!A2:C50', Array(49).fill(['', '', ''])); 
-      if (updated.length > 0) await updateSheetValues(googleToken!, config.googleSheetId!, `Accounts!A2:C${updated.length + 1}`, updated);
-      setAccounts(updated);
-    } catch (err) { setError('Error al eliminar cuenta'); } finally { setLoadingAccounts(false); }
-  };
-
-  const handleAddAlias = async () => {
-    if (!newAlias.legal || !newAlias.commercial) return;
-    const updated = [...aliases, [newAlias.legal, newAlias.commercial]];
-    try {
-      setLoadingAliases(true);
-      await updateSheetValues(googleToken!, config.googleSheetId!, `SYS_ALIASES!A2:B${updated.length + 1}`, updated);
-      setAliases(updated as any);
-      setNewAlias({ legal: '', commercial: '' });
-    } catch (err) { setError('Error al guardar alias'); } finally { setLoadingAliases(false); }
-  };
-
-  const handleDeleteAlias = async (index: number) => {
-    const updated = aliases.filter((_, i) => i !== index);
-    try {
-      setLoadingAliases(true);
-      await updateSheetValues(googleToken!, config.googleSheetId!, 'SYS_ALIASES!A2:B100', Array(99).fill(['', '']));
-      if (updated.length > 0) await updateSheetValues(googleToken!, config.googleSheetId!, `SYS_ALIASES!A2:B${updated.length + 1}`, updated);
-      setAliases(updated);
-    } catch (err) { setError('Error al eliminar alias'); } finally { setLoadingAliases(false); }
-  };
-
   const performSave = async (token: string) => {
     try {
       setStatus('saving');
-      if (saveAsAlias && ticketData && originalDetectedStore && ticketData.storeName !== originalDetectedStore) {
-        const updated = [...aliases, [originalDetectedStore, ticketData.storeName]];
-        await updateSheetValues(token, config.googleSheetId!, `SYS_ALIASES!A2:B${updated.length + 1}`, updated);
-        setAliases(updated as any);
-      }
-      if (ticketData?.paymentAccount && (ticketData.paymentMethod === 'Tarjeta' || ticketData.paymentMethod === 'Transferencia')) {
-        const cleanDetail = ticketData.paymentDetail.replace(/\D/g, '');
-        const exists = accounts.some(([digits]) => String(digits).replace("'", "") === cleanDetail);
-        if (!exists && cleanDetail.length >= 4) {
-          const updated = [...accounts, [`'${cleanDetail}`, ticketData.paymentMethod === 'Tarjeta' ? 'Nueva Tarjeta' : 'Nueva Transferencia', ticketData.paymentAccount]];
-          await updateSheetValues(token, config.googleSheetId!, `Accounts!A2:C${updated.length + 1}`, updated);
-          setAccounts(updated as any);
-        }
-      }
       const filename = `ticket_${ticketData?.storeName}_${new Date().getTime()}.webp`.replace(/\s+/g, '_');
       const driveResp = await uploadToDrive(token, webpPhoto!, filename, config.googleDriveFolderId);
       const updatedTicket = { ...ticketData!, driveLink: driveResp.webViewLink };
-      if (!config.googleSheetId) {
-        const newSheet = await createSheet(token, 'TicketApp Data');
-        saveConfig({ ...config, googleSheetId: newSheet.spreadsheetId });
-        await appendToSheet(token, newSheet.spreadsheetId, updatedTicket);
-      } else {
-        await appendToSheet(token, config.googleSheetId, updatedTicket);
-      }
-      setStatus('success');
+      await appendToSheetV2(token, config.googleSheetId!, updatedTicket, { saveAsAlias, originalDetectedStore });
+      setStatus('success'); loadSysLists(); 
     } catch (err: any) {
       console.error('Save error:', err);
       const isAuthError = err.message?.toLowerCase().includes('401') || err.message?.toLowerCase().includes('unauthorized') || err.message?.toLowerCase().includes('authentication credentials');
@@ -422,18 +382,6 @@ function App() {
 
   const handleRetryAfterError = () => { if (error?.includes('sesión de Google ha caducado')) { setStatus('reviewing'); } else { setStatus('idle'); } };
 
-  const loadHistory = async () => {
-    if (!config.googleSheetId) { setError('Configura el Sheet ID'); return; }
-    const fetchHistory = async (token: string) => {
-      try {
-        setLoadingHistory(true); setStatus('history');
-        const data = await getSheetValues(token, config.googleSheetId!, 'TicketsForm!A2:J100');
-        if (data.values) setHistory(data.values.reverse()); else setHistory([]);
-      } catch (err: any) { setError('Error al cargar historial'); } finally { setLoadingHistory(false); }
-    };
-    if (!googleToken) requestToken(); else fetchHistory(googleToken);
-  };
-
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -448,18 +396,12 @@ function App() {
 
   const handleValidateSchema = async (sheetId: string) => {
     if (!googleToken) return { success: false, message: "Inicia sesión primero" };
-    try { return await validateSchema(googleToken, sheetId); } catch (e: any) { return { success: false, message: e.message }; }
+    return await validateSchemaV2(googleToken, sheetId);
   };
 
   const handleCreateSchema = async (sheetId: string) => {
     if (!googleToken) return { success: false, message: "Inicia sesión primero" };
-    try { return await ensureSchema(googleToken, sheetId); } catch (e: any) { return { success: false, message: e.message }; }
-  };
-
-  const isDuplicate = () => {
-    if (!ticketData) return false;
-    // Fallback check for older format TxnIDs or if needed
-    return history.some(row => row[9]?.includes(ticketData.storeName) || row[9] === ticketData.txnId);
+    return await initializeDatabaseV2(googleToken, sheetId);
   };
 
   if (showSettings) {
@@ -495,25 +437,20 @@ function App() {
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
               {isSpecialSelector ? (
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <select style={{ flex: 1, height: '42px', borderRadius: '8px', border: '1px solid var(--primary)', background: '#1e293b', color: 'white' }} value={list.some(item => String(value).startsWith(item)) ? list.find(item => String(value).startsWith(item)) : ''} onChange={(e) => { const val = e.target.value; if (val === 'Otros') { setTicketData({ ...ticketData, [field]: 'Otros ()' }); } else { setTicketData({ ...ticketData, [field]: val }); setEditingField(null); } }}>
+                  <select value={list.some(item => String(value).startsWith(item)) ? list.find(item => String(value).startsWith(item)) : ''} onChange={(e) => { const val = e.target.value; if (val === 'Otros') { setTicketData({ ...ticketData, [field]: 'Otros ()' }); } else { setTicketData({ ...ticketData, [field]: val }); setEditingField(null); } }}>
                     <option value="">Seleccionar...</option>{list.map(item => <option key={item} value={item}>{item}</option>)}{(field !== 'paymentAccount' && field !== 'paymentMethod') && <option value="NEW">+ Nuevo...</option>}
                   </select>
                   {field === 'paymentMethod' && String(value).startsWith('Otros') && (
-                    <input autoFocus placeholder="¿Qué método?" type="text" value={String(value).match(/\((.*)\)/)?.[1] || ''} onChange={(e) => setTicketData({ ...ticketData, [field]: `Otros (${e.target.value})` })} style={{ flex: 1.5, border: '1px solid var(--primary)' }} />
+                    <input autoFocus placeholder="¿Qué método?" type="text" value={String(value).match(/\((.*)\)/)?.[1] || ''} onChange={(e) => setTicketData({ ...ticketData, [field]: `Otros (${e.target.value})` })} style={{ flex: 1.5 }} />
                   )}
                   {field !== 'paymentAccount' && field !== 'paymentMethod' && (
-                    <input autoFocus placeholder="Nuevo..." type="text" value={list.includes(value as string) ? '' : value as string} onChange={(e) => { setTicketData({ ...ticketData, [field]: e.target.value }); if (field === 'storeName') setSaveAsAlias(true); }} style={{ flex: 1.5, border: '1px solid var(--primary)' }} />
+                    <input autoFocus placeholder="Nuevo..." type="text" value={list.includes(value as string) ? '' : value as string} onChange={(e) => { setTicketData({ ...ticketData, [field]: e.target.value }); if (field === 'storeName') setSaveAsAlias(true); }} style={{ flex: 1.5 }} />
                   )}
-                  <button onClick={() => setEditingField(null)} style={{ background: 'var(--primary)', padding: '0.5rem' }}> <Check size={18} /> </button>
-                </div>
-              ) : field === 'description' ? (
-                <div style={{ flex: 1, display: 'flex', gap: '0.5rem' }}>
-                  <textarea autoFocus value={value as string} onChange={(e) => setTicketData({ ...ticketData, [field]: e.target.value })} onBlur={() => setEditingField(null)} style={{ width: '100%', minHeight: '60px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--primary)', borderRadius: '8px', color: 'white', padding: '0.5rem' }} />
                   <button onClick={() => setEditingField(null)} style={{ background: 'var(--primary)', padding: '0.5rem' }}> <Check size={18} /> </button>
                 </div>
               ) : (
                 <div style={{ flex: 1, display: 'flex', gap: '0.5rem' }}>
-                  <input autoFocus type={field === 'purchaseDate' ? 'datetime-local' : type} value={value as any} onChange={(e) => setTicketData({ ...ticketData, [field]: type === 'number' ? parseFloat(e.target.value) || 0 : e.target.value })} onBlur={() => setEditingField(null)} onKeyDown={(e) => e.key === 'Enter' && setEditingField(null)} style={{ flex: 1, border: '1px solid var(--primary)' }} />
+                  <input autoFocus type={field === 'purchaseDate' ? 'datetime-local' : type} value={value as any} onChange={(e) => setTicketData({ ...ticketData, [field]: type === 'number' ? parseFloat(e.target.value) || 0 : e.target.value })} onBlur={() => setEditingField(null)} onKeyDown={(e) => e.key === 'Enter' && setEditingField(null)} style={{ flex: 1 }} />
                   <button onClick={() => setEditingField(null)} style={{ background: 'var(--primary)', padding: '0.5rem' }}> <Check size={18} /> </button>
                 </div>
               )}
@@ -542,15 +479,106 @@ function App() {
       <header style={{ padding: '1rem 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1 style={{ fontSize: '1.5rem' }}>TicketApp 🎫</h1>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
-          {config.analysisMode && <button onClick={() => setStatus('benchmark')} title="Benchmark"><Zap size={20} color="var(--primary)" /></button>}
-          <button onClick={loadAliasesView} title="Alias"><BookMarked size={20} /></button>
-          <button onClick={loadAccountsView} title="Cuentas"><Users size={20} /></button>
-          <button onClick={loadHistory} title="Historial"><HistoryIcon size={20} /></button>
-          <button onClick={() => { const url = getShareUrl(); if (navigator.clipboard?.writeText) { navigator.clipboard.writeText(url).then(() => alert('Copiado!')).catch(() => copyToClipboard(url) && alert('Copiado!')); } else { copyToClipboard(url) && alert('Copiado!'); } }} title="Compartir"><Share2 size={20} /></button>
+          <button onClick={() => { if (checkAuth()) setStatus('aliases'); }} title="Alias"><BookMarked size={20} /></button>
+          <button onClick={() => { if (checkAuth()) { setStatus('accounts'); loadAccounts(); } }} title="Cuentas"><Users size={20} /></button>
+          <button onClick={() => setStatus('idle')} title="Inicio"><Camera size={20} /></button>
           <button onClick={() => setShowSettings(true)}><SettingsIcon size={20} /></button>
         </div>
       </header>
       <main style={{ marginTop: '2rem' }}>
+        {status === 'db_init' && (
+          <div className="card" style={{ textAlign: 'center', padding: '3rem 2rem' }}>
+            <Database size={64} style={{ color: 'var(--primary)', marginBottom: '1rem' }} />
+            <h2>Inicializar Base de Datos V2</h2>
+            <p style={{ color: '#94a3b8', marginBottom: '2rem' }}>Se requiere configurar la estructura de tablas relacionales en tu Google Sheet para continuar.</p>
+            <button className="primary" onClick={handleInitDb} disabled={dbStatus === 'checking'} style={{ width: '100%' }}>
+              {dbStatus === 'checking' ? <Loader2 className="animate-spin" /> : 'Inicializar Ahora'}
+            </button>
+          </div>
+        )}
+        {status === 'accounts' && (
+          <div className="card" style={{ padding: '1rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem' }}><h3>Gestionar Personas y Cuentas</h3><button onClick={() => setStatus('idle')}><X size={20} /></button></div>
+            <div style={{ marginBottom: '2rem', paddingBottom: '1.5rem', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+              <h4 style={{ fontSize: '0.85rem', color: 'var(--primary)', marginBottom: '0.75rem' }}>Añadir Persona</h4>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <input type="text" placeholder="Nombre" style={{ flex: 1 }} value={newPersonName} onChange={e => setNewPersonName(e.target.value)} />
+                <button className="primary" onClick={handleAddPerson}><Plus size={20} /></button>
+              </div>
+            </div>
+            <h4 style={{ fontSize: '0.85rem', color: 'var(--primary)', marginBottom: '0.75rem' }}>{editingAccountId ? 'Editar Tarjeta' : 'Vincular Tarjeta'}</h4>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1.5rem' }}>
+               <select value={editingAccountId ? editAccountData.person : newAccount.person} onChange={e => editingAccountId ? setEditAccountData({...editAccountData, person: e.target.value}) : setNewAccount({...newAccount, person: e.target.value})}>
+                  {people.map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <input type="text" placeholder="Dígitos (*1234)" style={{ flex: 1 }} value={editingAccountId ? editAccountData.digits : newAccount.digits} onChange={e => editingAccountId ? setEditAccountData({...editAccountData, digits: e.target.value}) : setNewAccount({...newAccount, digits: e.target.value})} />
+                  <input type="text" placeholder="Alias (Nu, BBVA...)" style={{ flex: 1 }} value={editingAccountId ? editAccountData.alias : newAccount.alias} onChange={e => editingAccountId ? setEditAccountData({...editAccountData, alias: e.target.value}) : setNewAccount({...newAccount, alias: e.target.value})} />
+                  {editingAccountId ? (
+                    <div style={{ display: 'flex', gap: '0.25rem' }}>
+                      <button className="primary" onClick={handleUpdateAccount}><Check size={20} /></button>
+                      <button onClick={() => setEditingAccountId(null)} style={{ background: '#334155' }}><X size={20} /></button>
+                    </div>
+                  ) : (
+                    <button className="primary" onClick={handleAddAccount}><Plus size={20} /></button>
+                  )}
+                </div>
+            </div>
+            {loadingAccounts ? <Loader2 size={24} className="animate-spin" /> : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                {accounts.map((acc, i) => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', opacity: editingAccountId === acc[0] ? 0.5 : 1 }}>
+                    <div>
+                      <div style={{ fontSize: '0.9rem' }}><strong>{acc[4]}</strong> ({acc[3]})</div>
+                      <div style={{ fontSize: '0.7rem', color: '#94a3b8' }}>{acc[1]} | {acc[2]}</div>
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <button onClick={() => { setEditingAccountId(acc[0]); setEditAccountData({ person: acc[1], type: acc[2], digits: acc[3], alias: acc[4] }); }} style={{ background: 'transparent', padding: '0.5rem' }}><Pencil size={16} /></button>
+                      <button onClick={() => handleDeleteEntry('DBTABLE_ACCOUNTS', acc[0])} style={{ background: 'transparent' }}><Trash2 size={16} color="var(--error)" /></button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {status === 'aliases' && (
+          <div className="card" style={{ padding: '1rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem' }}><h3>Gestionar Alias</h3><button onClick={() => setStatus('idle')}><X size={20} /></button></div>
+            <h4 style={{ fontSize: '0.85rem', color: 'var(--primary)', marginBottom: '0.75rem' }}>{editingAliasId ? 'Editar Alias' : 'Añadir Alias'}</h4>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1.5rem' }}>
+              <select value={editingAliasId ? editAliasData.legalStore : newAlias.legalStore} onChange={e => editingAliasId ? setEditAliasData({...editAliasData, legalStore: e.target.value}) : setNewAlias({...newAlias, legalStore: e.target.value})}>
+                <option value="">Seleccionar Tienda...</option>
+                {knownStores.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <input type="text" placeholder="Alias en Ticket" style={{ flex: 1 }} value={editingAliasId ? editAliasData.aliasName : newAlias.aliasName} onChange={e => editingAliasId ? setEditAliasData({...editAliasData, aliasName: e.target.value}) : setNewAlias({...newAlias, aliasName: e.target.value})} />
+                {editingAliasId ? (
+                  <div style={{ display: 'flex', gap: '0.25rem' }}>
+                    <button className="primary" onClick={handleUpdateAlias}><Check size={20} /></button>
+                    <button onClick={() => setEditingAliasId(null)} style={{ background: '#334155' }}><X size={20} /></button>
+                  </div>
+                ) : (
+                  <button className="primary" onClick={handleAddAlias}><Plus size={20} /></button>
+                )}
+              </div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              {aliases.map((al, i) => (
+                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.75rem', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', opacity: editingAliasId === al[0] ? 0.5 : 1 }}>
+                  <div>
+                    <div style={{ fontSize: '0.9rem' }}><strong>{al[1]}</strong></div>
+                    <div style={{ fontSize: '0.7rem', color: '#94a3b8' }}>Mapea a: {al[2]}</div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button onClick={() => { setEditingAliasId(al[0]); setEditAliasData({ legalStore: al[2], aliasName: al[1] }); }} style={{ background: 'transparent', padding: '0.5rem' }}><Pencil size={16} /></button>
+                    <button onClick={() => handleDeleteEntry('DBTABLE_ALIASES', al[0])} style={{ background: 'transparent' }}><Trash2 size={16} color="var(--error)" /></button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         {status === 'idle' && (
           <div className="card" style={{ padding: '3rem 2rem', textAlign: 'center' }}>
             {queue.length > 0 && (
@@ -580,140 +608,56 @@ function App() {
             </div>
           </div>
         )}
-        {status === 'accounts' && (
-          <div className="card" style={{ padding: '1rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem' }}><h3>Gestionar Personas y Tarjetas</h3><button onClick={() => setStatus('idle')}><X size={20} /></button></div>
-            <div style={{ marginBottom: '2rem', paddingBottom: '1.5rem', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-              <h4 style={{ fontSize: '0.85rem', color: 'var(--primary)', marginBottom: '0.75rem' }}>Personas</h4>
-              <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
-                <input type="text" placeholder="Nueva Persona" style={{ flex: 1 }} value={newPersonName} onChange={e => setNewPersonName(e.target.value)} />
-                <button className="primary" onClick={handleAddPerson} disabled={loadingAccounts}><Plus size={20} /></button>
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-                {people.map((p, i) => (
-                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', background: 'rgba(255,255,255,0.05)', padding: '0.25rem 0.5rem', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.1)' }}>
-                    {editingPersonIdx === i ? (
-                      <>
-                        <input autoFocus type="text" value={editPersonValue} onChange={e => setEditPersonName(e.target.value)} style={{ width: '80px', fontSize: '0.85rem', padding: '0.1rem' }} />
-                        <button onClick={() => handleRenamePerson(i)} style={{ padding: '0.1rem', background: 'transparent' }}><Check size={14} color="var(--primary)"/></button>
-                      </>
-                    ) : (
-                      <>
-                        <span style={{ fontSize: '0.85rem' }}>{p}</span>
-                        <button onClick={() => { setEditingPersonIdx(i); setEditPersonName(p); }} style={{ padding: '0.1rem', background: 'transparent' }}><Pencil size={12} /></button>
-                        {p !== 'Principal' && <button onClick={() => handleDeletePerson(i)} style={{ padding: '0.1rem', background: 'transparent' }}><X size={12} color="var(--error)"/></button>}
-                      </>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-            <h4 style={{ fontSize: '0.85rem', color: 'var(--primary)', marginBottom: '0.75rem' }}>Vincular Tarjeta / Transferencia</h4>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1.5rem' }}>
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <input type="text" placeholder="Dígitos" style={{ flex: 1 }} value={newAccount.digits} onChange={e => setNewAccount({...newAccount, digits: e.target.value})} />
-                <input type="text" placeholder="Alias" style={{ flex: 2 }} value={newAccount.cardName} onChange={e => setNewAccount({...newAccount, cardName: e.target.value})} />
-              </div>
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <select style={{ flex: 1, background: '#1e293b', color: 'white' }} value={newAccount.person} onChange={e => setNewAccount({...newAccount, person: e.target.value})}>
-                  <option value="">¿A quién?</option>{people.map(p => <option key={p} value={p}>{p}</option>)}
-                </select>
-                <button className="primary" onClick={handleAddAccount} disabled={loadingAccounts}>Vincular</button>
-              </div>
-            </div>
-            {loadingAccounts ? <Loader2 size={24} className="animate-spin" /> : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}> 
-                {accounts.map((acc, i) => (
-                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem', background: 'rgba(255,255,255,0.03)', borderRadius: '8px' }}> 
-                    {editingAccountIdx === i ? (
-                      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                        <div style={{ fontSize: '0.8rem', color: 'var(--primary)' }}>*{String(acc[0]).replace("'", "")}</div>
-                        <input type="text" value={editAccountData.cardName} onChange={e => setEditAccountData({...editAccountData, cardName: e.target.value})} placeholder="Alias" />
-                        <select style={{ background: '#1e293b', color: 'white' }} value={editAccountData.person} onChange={e => setEditAccountData({...editAccountData, person: e.target.value})}>{people.map(p => <option key={p} value={p}>{p}</option>)}</select>
-                        <div style={{ display: 'flex', gap: '0.5rem' }}><button className="primary" onClick={() => handleUpdateAccount(i)} style={{ flex: 1, padding: '0.25rem' }}><Check size={16} /></button><button onClick={() => setEditingAccountIdx(null)} style={{ flex: 1, padding: '0.25rem' }}><X size={16} /></button></div>
-                      </div>
-                    ) : (
-                      <><div><strong>*{String(acc[0]).replace("'", "")}</strong> {acc[1]} <br/><span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>{acc[2]}</span></div> <div style={{ display: 'flex', gap: '0.25rem' }}><button onClick={() => { setEditingAccountIdx(i); setEditAccountData({ cardName: acc[1], person: acc[2] }); }} style={{ background: 'transparent', padding: '0.5rem' }}><Pencil size={16} /></button><button onClick={() => handleDeleteAccount(i)} style={{ background: 'transparent', padding: '0.5rem' }}><Trash2 size={16} color="var(--error)" /></button></div></>
-                    )}
-                  </div>
-                ))} 
-              </div>
-            )}
-          </div>
-        )}
-        {status === 'aliases' && (
-          <div className="card" style={{ padding: '1rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem' }}><h3>Gestionar Alias</h3><button onClick={() => setStatus('idle')}><X size={20} /></button></div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1.5rem' }}>
-              <input type="text" placeholder="Nombre Legal" value={newAlias.legal} onChange={e => setNewAlias({...newAlias, legal: e.target.value})} />
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <input type="text" placeholder="Alias Comercial" style={{ flex: 1 }} value={newAlias.commercial} onChange={e => setNewAlias({...newAlias, commercial: e.target.value})} />
-                <button className="primary" onClick={handleAddAlias} disabled={loadingAliases}><Plus size={20} /></button>
-              </div>
-            </div>
-            {loadingAliases ? <Loader2 size={24} className="animate-spin" /> : <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}> {aliases.map((al, i) => <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.75rem', background: 'rgba(255,255,255,0.03)' }}> <div><div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>{al[0]}</div><strong>{al[1]}</strong></div> <button onClick={() => handleDeleteAlias(i)}><Trash2 size={18} /></button> </div>)} </div>}
-          </div>
-        )}
-        {status === 'benchmark' && (
-          <div style={{ marginTop: '2rem' }}>
-            <ModelTester apiKey={config.geminiApiKey} imageBase64={webpPhoto} onClose={() => setStatus('idle')} knownCategories={knownCategories} knownStores={knownStores} customInstructions={customInstructions} aliases={aliases} />
-          </div>
-        )}
-        {status === 'history' && (
-          <div className="card" style={{ padding: '1rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem' }}><h3>Historial</h3><button onClick={() => setStatus('idle')}><X size={20} /></button></div>
-            {loadingHistory ? <Loader2 size={32} className="animate-spin" /> : history.length === 0 ? <p>Sin tickets.</p> : <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}> {history.map((row, i) => <div key={i} className="card" style={{ padding: '1rem' }}> <div style={{ display: 'flex', justifyContent: 'space-between' }}><strong>{row[3]}</strong> <span>${row[4]}</span></div> <div>{row[1].replace('T', ' ')} | {row[7]}</div> </div>)} </div>}
-          </div>
-        )}
         {status === 'confirm_capture' && webpPhoto && (
-          <div className="card" style={{ padding: '0', position: 'relative' }}>
+          <>
             {isCropping ? (
-              <div style={{ position: 'relative', width: '100%', height: '450px', background: '#000', borderRadius: '12px', overflow: 'hidden' }}>
-                <Cropper
-                  image={webpPhoto}
-                  crop={crop}
-                  zoom={zoom}
-                  rotation={rotation}
-                  aspect={undefined}
-                  onCropChange={setCrop}
-                  onZoomChange={setZoom}
-                  onRotationChange={setRotation}
-                  onCropComplete={onCropComplete}
-                />
-                <div style={{ position: 'absolute', bottom: '1rem', left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '0.5rem', zIndex: 10, background: 'rgba(0,0,0,0.6)', padding: '0.5rem', borderRadius: '12px', backdropFilter: 'blur(4px)', alignItems: 'center' }}>
-                  <button onClick={() => setRotation(r => (r - 90))} style={{ background: 'transparent', padding: '0.5rem' }}><RotateCcw size={20} /></button>
-                  <button onClick={() => setRotation(r => (r + 90))} style={{ background: 'transparent', padding: '0.5rem' }}><RotateCw size={20} /></button>
-                  <div style={{ width: '1px', height: '24px', background: 'rgba(255,255,255,0.2)', margin: '0 0.25rem' }} />
-                  <button className="primary" onClick={handleCropSave} style={{ padding: '0.5rem 1rem' }}><Check size={18} /> Aplicar</button>
-                  <button onClick={() => { setIsCropping(false); setRotation(0); }} style={{ background: '#334155', padding: '0.5rem 1rem' }}><X size={18} /></button>
+              <div 
+                style={{ 
+                  position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, 
+                  background: '#000', zIndex: 1100, display: 'flex', 
+                  flexDirection: 'column', overflow: 'hidden'
+                }}
+              >
+                <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
+                  <Cropper 
+                    ref={cropperRef}
+                    src={webpPhoto} 
+                    style={{ height: '100%', width: '100%' }}
+                    initialAspectRatio={undefined}
+                    guides={true}
+                    viewMode={1}
+                    background={false}
+                    responsive={true}
+                    autoCropArea={0.8}
+                  />
+                </div>
+                <div style={{ background: 'rgba(0,0,0,0.8)', padding: '1.5rem', display: 'flex', justifyContent: 'center', gap: '1rem', borderTop: '1px solid #334155', flexShrink: 0 }}>
+                   <button onClick={() => cropperRef.current?.cropper.rotate(-90)} style={{ background: '#1e293b' }}><RotateCcw size={24} /></button>
+                   <button onClick={() => cropperRef.current?.cropper.rotate(90)} style={{ background: '#1e293b' }}><RotateCw size={24} /></button>
+                   <button className="primary" onClick={handleCropSave}><Check size={24} /> Aplicar</button>
+                   <button onClick={() => { setIsCropping(false); }} style={{ background: '#334155' }}><X size={24} /></button>
                 </div>
               </div>
             ) : (
-              <>
+              <div className="card" style={{ padding: '0', overflow: 'hidden' }}>
                 <div style={{ maxHeight: '350px', overflow: 'hidden', borderBottom: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer' }} onClick={() => setIsViewingFullImage(true)}>
-                  <img src={webpPhoto} alt="Preview" style={{ width: '100%', objectFit: 'cover' }} />
+                   <img src={webpPhoto} alt="Confirm" style={{ width: '100%', objectFit: 'cover' }} />
                 </div>
                 <div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                   <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    {isEnhancing ? (
-                      <button disabled style={{ flex: 1 }}><Loader2 size={18} className="animate-spin" /> ...</button>
-                    ) : (
-                      <button onClick={handleEnhance} style={{ flex: 1, background: 'rgba(255,255,255,0.05)', color: 'white' }} title="Mejorar calidad"><Sparkles size={18} /> Mejorar</button>
-                    )}
+                    {isEnhancing ? ( <button disabled style={{ flex: 1 }}><Loader2 size={18} className="animate-spin" /> ...</button> ) : ( <button onClick={handleEnhance} style={{ flex: 1, background: 'rgba(255,255,255,0.05)', color: 'white' }} title="Mejorar calidad"><Sparkles size={18} /> Mejorar</button> )}
                     <button onClick={() => setIsCropping(true)} style={{ flex: 1, background: 'rgba(255,255,255,0.05)', color: 'white' }} title="Recortar"><Crop size={18} /> Recortar</button>
-                    {photoHistory.length > 0 && (
-                      <button onClick={handleUndo} style={{ flex: 0.5, background: 'rgba(255,255,255,0.1)', color: '#94a3b8' }} title="Deshacer"><Undo2 size={18} /></button>
-                    )}
+                    {photoHistory.length > 0 && ( <button onClick={handleUndo} style={{ flex: 0.4 }}><Undo2 size={18} /></button> )}
                   </div>
-                  <button className="primary" onClick={() => handleAnalyze()}><Check size={20} /> Analizar Ticket</button>
+                  <button className="primary" onClick={() => handleAnalyze()} style={{ height: '50px', fontSize: '1.1rem' }}><Check size={24} /> Analizar Ticket</button>
                   <div style={{ display: 'flex', gap: '0.75rem' }}>
-                    <button onClick={() => setStatus('idle')} style={{ flex: 1 }}><Camera size={20} /> Repetir</button>
+                    <button onClick={() => setStatus('idle')} style={{ flex: 1 }}><Camera size={18} /> Repetir</button>
                     <button onClick={() => setStatus('idle')} style={{ flex: 1, background: 'rgba(239, 68, 68, 0.1)', color: '#f87171' }}>Cancelar</button>
                   </div>
                 </div>
-              </>
+              </div>
             )}
-          </div>
+          </>
         )}
         {(status === 'processing' || status === 'saving') && (
           <div className="card" style={{ textAlign: 'center', padding: '4rem 2rem' }}><Loader2 size={48} className="animate-spin" style={{ margin: '0 auto 1.5rem' }} /><h2>{status === 'processing' ? 'Analizando...' : 'Guardando...'}</h2></div>
@@ -728,12 +672,6 @@ function App() {
                 <h3 style={{ margin: 0 }}>Revisar Ticket</h3>
                 <button onClick={() => setStatus('idle')} style={{ padding: '0.5rem', background: 'transparent' }}><X size={20} /></button>
               </div>
-              {isDuplicate() && (
-                <div style={{ marginBottom: '1.5rem', padding: '0.75rem', borderRadius: '8px', background: 'rgba(234, 179, 8, 0.1)', color: '#eab308', border: '1px solid rgba(234, 179, 8, 0.2)', fontSize: '0.8rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                  <AlertTriangle size={16} /> 
-                  <span><strong>Atención:</strong> Ya existe un registro igual en tu historial.</span>
-                </div>
-              )}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                 {renderEditableField('Proveedor', 'storeName')}
                 {renderEditableField('Fecha y Hora', 'purchaseDate')}
@@ -746,22 +684,26 @@ function App() {
                   <div style={{ flex: 1 }}>{renderEditableField('Monto', 'amount', 'number')}</div>
                   <div style={{ flex: 1.2 }}>{renderEditableField('Categoría', 'category')}</div>
                 </div>
-                {renderEditableField('Descripción', 'description')}
               </div>
               <button className="primary" style={{ width: '100%', marginTop: '1.5rem' }} onClick={handleSave}><Save size={20} /> Confirmar y Guardar</button>
             </div>
           </div>
         )}
         {status === 'success' && (
-          <div className="card" style={{ textAlign: 'center', padding: '3rem 2rem' }}><Check size={32} style={{ color: '#22c55e' }} /><h2>¡Guardado!</h2><button className="primary" onClick={() => setStatus('idle')}>Capturar otro</button>{config.googleSheetId && <a href={`https://docs.google.com/spreadsheets/d/${config.googleSheetId}`} target="_blank" rel="noopener noreferrer" style={{ display: 'block', marginTop: '1rem' }}>Abrir Sheet</a>}</div>
+          <div className="card" style={{ textAlign: 'center', padding: '3rem 2rem' }}>
+            <Check size={32} style={{ color: '#22c55e' }} />
+            <h2>¡Guardado!</h2>
+            <p style={{ color: '#94a3b8', fontSize: '0.8rem', marginTop: '0.5rem' }}>Se ha registrado en DBTABLE_TICKETS</p>
+            <button className="primary" onClick={() => setStatus('idle')} style={{ marginTop: '1.5rem' }}>Capturar otro</button>
+          </div>
         )}
         {status === 'error' && (
           <div className="card" style={{ border: '1px solid var(--error)' }}><AlertCircle size={48} style={{ color: 'var(--error)', margin: '0 auto 1.5rem', display: 'block' }} /><h2>Error</h2><p>{error}</p><button className="primary" style={{ width: '100%', marginTop: '1.5rem' }} onClick={handleRetryAfterError}>{error?.includes('sesión de Google ha caducado') ? 'Volver a Intentar' : 'Ir al Inicio'}</button></div>
         )}
       </main>
       {isViewingFullImage && webpPhoto && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.95)', zIndex: 1000, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '1rem' }} onClick={() => setIsViewingFullImage(false)}>
-          <button onClick={() => setIsViewingFullImage(false)} style={{ position: 'absolute', top: '1rem', right: '1rem', background: 'rgba(255,255,255,0.2)', color: 'white', borderRadius: '50%', padding: '0.5rem', zIndex: 1001, border: 'none', cursor: 'pointer' }}>
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.95)', zIndex: 2000, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '1rem' }} onClick={() => setIsViewingFullImage(false)}>
+          <button onClick={() => setIsViewingFullImage(false)} style={{ position: 'absolute', top: '1rem', right: '1rem', background: 'rgba(255,255,255,0.2)', color: 'white', borderRadius: '50%', padding: '0.5rem', zIndex: 2001, border: 'none', cursor: 'pointer' }}>
             <X size={32} />
           </button>
           <img src={webpPhoto} alt="Ticket Full" style={{ maxWidth: '100%', maxHeight: '90vh', objectFit: 'contain', borderRadius: '8px', boxShadow: '0 0 40px rgba(0,0,0,0.5)' }} />
