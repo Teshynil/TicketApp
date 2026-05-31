@@ -422,9 +422,12 @@ function App() {
     else if (field === 'storeName') list = knownStores;
     else if (field === 'paymentAccount') list = people;
     else if (field === 'paymentMethod') list = PAYMENT_METHODS;
+    
     let isNew = false;
-    if (field === 'category' && typeof value === 'string' && !knownCategories.includes(value)) isNew = true;
-    if (field === 'storeName' && typeof value === 'string' && !knownStores.includes(value)) isNew = true;
+    if (field === 'category' && typeof value === 'string' && value && !knownCategories.includes(value)) isNew = true;
+    if (field === 'storeName' && typeof value === 'string' && value && !knownStores.includes(value)) isNew = true;
+
+    const isCustomValue = isSpecialSelector && typeof value === 'string' && value && !list.includes(value) && !value.startsWith('Otros (');
 
     return (
       <div style={{ marginBottom: '1rem' }}>
@@ -436,30 +439,85 @@ function App() {
           {isEditing ? (
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
               {isSpecialSelector ? (
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <select value={list.some(item => String(value).startsWith(item)) ? list.find(item => String(value).startsWith(item)) : ''} onChange={(e) => { const val = e.target.value; if (val === 'Otros') { setTicketData({ ...ticketData, [field]: 'Otros ()' }); } else { setTicketData({ ...ticketData, [field]: val }); setEditingField(null); } }}>
-                    <option value="">Seleccionar...</option>{list.map(item => <option key={item} value={item}>{item}</option>)}{(field !== 'paymentAccount' && field !== 'paymentMethod') && <option value="NEW">+ Nuevo...</option>}
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <select 
+                    style={{ flex: '1 1 120px', minWidth: '120px' }}
+                    value={list.includes(value as string) ? value as string : (value && String(value).startsWith('Otros') ? 'Otros' : 'NEW')} 
+                    onChange={(e) => { 
+                      const val = e.target.value; 
+                      if (val === 'Otros') { 
+                        setTicketData({ ...ticketData, [field]: 'Otros ()' }); 
+                      } else if (val === 'NEW') {
+                        setTicketData({ ...ticketData, [field]: '' });
+                      } else { 
+                        setTicketData({ ...ticketData, [field]: val }); 
+                        setEditingField(null); 
+                      } 
+                    }}
+                  >
+                    <option value="">Seleccionar...</option>
+                    {list.map(item => <option key={item} value={item}>{item}</option>)}
+                    {(field !== 'paymentAccount' && field !== 'paymentMethod') && <option value="NEW">+ Nuevo...</option>}
                   </select>
+                  
                   {field === 'paymentMethod' && String(value).startsWith('Otros') && (
-                    <input autoFocus placeholder="¿Qué método?" type="text" value={String(value).match(/\((.*)\)/)?.[1] || ''} onChange={(e) => setTicketData({ ...ticketData, [field]: `Otros (${e.target.value})` })} style={{ flex: 1.5 }} />
+                    <input 
+                      key={`${field}-custom`}
+                      autoFocus 
+                      placeholder="¿Qué método?" 
+                      type="text" 
+                      value={String(value).match(/\((.*)\)/)?.[1] || ''} 
+                      onChange={(e) => setTicketData({ ...ticketData, [field]: `Otros (${e.target.value})` })} 
+                      style={{ flex: '1 1 150px' }} 
+                    />
                   )}
-                  {field !== 'paymentAccount' && field !== 'paymentMethod' && (
-                    <input autoFocus placeholder="Nuevo..." type="text" value={list.includes(value as string) ? '' : value as string} onChange={(e) => { setTicketData({ ...ticketData, [field]: e.target.value }); if (field === 'storeName') setSaveAsAlias(true); }} style={{ flex: 1.5 }} />
+                  
+                  {(isCustomValue || (isSpecialSelector && !value && field !== 'paymentAccount' && field !== 'paymentMethod')) && (
+                    <input 
+                      key={`${field}-new`}
+                      autoFocus 
+                      placeholder="Escribe nuevo..." 
+                      type="text" 
+                      value={value as string} 
+                      onChange={(e) => { 
+                        setTicketData({ ...ticketData, [field]: e.target.value }); 
+                        if (field === 'storeName') setSaveAsAlias(true); 
+                      }} 
+                      style={{ flex: '1 1 150px' }} 
+                    />
                   )}
-                  <button onClick={() => setEditingField(null)} style={{ background: 'var(--primary)', padding: '0.5rem' }}> <Check size={18} /> </button>
+                  
+                  <button onClick={() => setEditingField(null)} style={{ background: 'var(--primary)', padding: '0.5rem', flexShrink: 0 }}> 
+                    <Check size={18} /> 
+                  </button>
                 </div>
               ) : (
                 <div style={{ flex: 1, display: 'flex', gap: '0.5rem' }}>
-                  <input autoFocus type={field === 'purchaseDate' ? 'datetime-local' : type} value={value as any} onChange={(e) => setTicketData({ ...ticketData, [field]: type === 'number' ? parseFloat(e.target.value) || 0 : e.target.value })} onBlur={() => setEditingField(null)} onKeyDown={(e) => e.key === 'Enter' && setEditingField(null)} style={{ flex: 1 }} />
-                  <button onClick={() => setEditingField(null)} style={{ background: 'var(--primary)', padding: '0.5rem' }}> <Check size={18} /> </button>
+                  <input 
+                    key={field}
+                    autoFocus 
+                    type={field === 'purchaseDate' ? 'datetime-local' : type} 
+                    value={value as any} 
+                    onChange={(e) => setTicketData({ ...ticketData, [field]: type === 'number' ? parseFloat(e.target.value) || 0 : e.target.value })} 
+                    onBlur={() => setEditingField(null)} 
+                    onKeyDown={(e) => e.key === 'Enter' && setEditingField(null)} 
+                    style={{ flex: 1 }} 
+                  />
+                  <button onClick={() => setEditingField(null)} style={{ background: 'var(--primary)', padding: '0.5rem' }}> 
+                    <Check size={18} /> 
+                  </button>
                 </div>
               )}
             </div>
           ) : (
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <div style={{ flex: 1, fontSize: '1rem', fontWeight: (field === 'amount' || field === 'paymentAccount') ? 'bold' : 'normal', color: field === 'amount' ? 'var(--primary)' : 'white' }}> {field === 'amount' ? `$${value}` : field === 'purchaseDate' ? String(value).replace('T', ' ') : value as string || <em style={{color: '#64748b'}}>Sin datos</em>} </div>
-                <button onClick={() => setEditingField(field)} style={{ background: 'transparent', color: '#94a3b8', padding: '0.5rem' }}> <Pencil size={16} /> </button>
+                <div style={{ flex: 1, fontSize: '1rem', fontWeight: (field === 'amount' || field === 'paymentAccount') ? 'bold' : 'normal', color: field === 'amount' ? 'var(--primary)' : 'white' }}> 
+                  {field === 'amount' ? `$${value}` : field === 'purchaseDate' ? String(value).replace('T', ' ') : value as string || <em style={{color: '#64748b'}}>Sin datos</em>} 
+                </div>
+                <button onClick={() => setEditingField(field)} style={{ background: 'transparent', color: '#94a3b8', padding: '0.5rem' }}> 
+                  <Pencil size={16} /> 
+                </button>
               </div>
               {field === 'storeName' && originalDetectedStore && value !== originalDetectedStore && (
                 <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.65rem', color: '#64748b', marginTop: '0.2rem', cursor: 'pointer', background: 'rgba(255,255,255,0.02)', padding: '0.25rem 0.5rem', borderRadius: '4px', alignSelf: 'start' }}>
@@ -511,16 +569,22 @@ function App() {
                <select value={editingAccountId ? editAccountData.person : newAccount.person} onChange={e => editingAccountId ? setEditAccountData({...editAccountData, person: e.target.value}) : setNewAccount({...newAccount, person: e.target.value})}>
                   {people.map(p => <option key={p} value={p}>{p}</option>)}
                 </select>
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <input type="text" placeholder="Dígitos (*1234)" style={{ flex: 1 }} value={editingAccountId ? editAccountData.digits : newAccount.digits} onChange={e => editingAccountId ? setEditAccountData({...editAccountData, digits: e.target.value}) : setNewAccount({...newAccount, digits: e.target.value})} />
-                  <input type="text" placeholder="Alias (Nu, BBVA...)" style={{ flex: 1 }} value={editingAccountId ? editAccountData.alias : newAccount.alias} onChange={e => editingAccountId ? setEditAccountData({...editAccountData, alias: e.target.value}) : setNewAccount({...newAccount, alias: e.target.value})} />
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <input 
+                    key="acc-digits"
+                    type="text" placeholder="Dígitos (*1234)" style={{ flex: '1 1 120px' }} value={editingAccountId ? editAccountData.digits : newAccount.digits} onChange={e => editingAccountId ? setEditAccountData({...editAccountData, digits: e.target.value}) : setNewAccount({...newAccount, digits: e.target.value})} 
+                  />
+                  <input 
+                    key="acc-alias"
+                    type="text" placeholder="Alias (Nu, BBVA...)" style={{ flex: '1 1 120px' }} value={editingAccountId ? editAccountData.alias : newAccount.alias} onChange={e => editingAccountId ? setEditAccountData({...editAccountData, alias: e.target.value}) : setNewAccount({...newAccount, alias: e.target.value})} 
+                  />
                   {editingAccountId ? (
                     <div style={{ display: 'flex', gap: '0.25rem' }}>
                       <button className="primary" onClick={handleUpdateAccount}><Check size={20} /></button>
                       <button onClick={() => setEditingAccountId(null)} style={{ background: '#334155' }}><X size={20} /></button>
                     </div>
                   ) : (
-                    <button className="primary" onClick={handleAddAccount}><Plus size={20} /></button>
+                    <button className="primary" onClick={handleAddAccount} style={{ flex: '1 0 auto' }}><Plus size={20} /> Añadir</button>
                   )}
                 </div>
             </div>
@@ -551,15 +615,18 @@ function App() {
                 <option value="">Seleccionar Tienda...</option>
                 {knownStores.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <input type="text" placeholder="Alias en Ticket" style={{ flex: 1 }} value={editingAliasId ? editAliasData.aliasName : newAlias.aliasName} onChange={e => editingAliasId ? setEditAliasData({...editAliasData, aliasName: e.target.value}) : setNewAlias({...newAlias, aliasName: e.target.value})} />
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <input 
+                  key="alias-name-input"
+                  type="text" placeholder="Alias en Ticket" style={{ flex: '1 1 200px' }} value={editingAliasId ? editAliasData.aliasName : newAlias.aliasName} onChange={e => editingAliasId ? setEditAliasData({...editAliasData, aliasName: e.target.value}) : setNewAlias({...newAlias, aliasName: e.target.value})} 
+                />
                 {editingAliasId ? (
                   <div style={{ display: 'flex', gap: '0.25rem' }}>
                     <button className="primary" onClick={handleUpdateAlias}><Check size={20} /></button>
                     <button onClick={() => setEditingAliasId(null)} style={{ background: '#334155' }}><X size={20} /></button>
                   </div>
                 ) : (
-                  <button className="primary" onClick={handleAddAlias}><Plus size={20} /></button>
+                  <button className="primary" onClick={handleAddAlias} style={{ flex: '1 0 auto' }}><Plus size={20} /> Añadir</button>
                 )}
               </div>
             </div>
